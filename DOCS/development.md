@@ -7,7 +7,7 @@
 Юнит-тестами обязательно покрывается вся логика, не зависящая напрямую от сети/Discord API:
 - парсинг и валидация времени мьюта, диапазон `60s–28d`, формат `<число><суффикс>` без составных форматов ([mute.md](components/mute.md));
 - проверка иерархии ролей (позиция цели vs инициатора, цель - бот, явная проверка `target.id == guild.owner_id`) - общая утилита из [rules.md](rules.md) "Роли и права";
-- выбор сценария `!give` (чистый / ручная проверка / анти-работяга) по условиям B (новорег < 6 мес.) и C (< 2 недель на сервере), обе - OR ([roleGiver.md](components/roleGiver.md));
+- выбор сценария `!give` (чистый / ручная проверка / анти-работяга) по условиям B (новорег < 6 мес.), C (< 2 недель на сервере) и D (< 20 минут между регистрацией и присоединением), все - OR ([roleGiver.md](components/roleGiver.md));
 - тик начисления опыта в Voices: пропуск тика при отсутствии владельца в своей комнате, исключение гостя (deaf/бот), +8/+10 за гостя, +5 бонус за стрим при ≥1 учтённом госте ([Voices.md](components/Voices.md));
 - лимит 100 записей личного бан-листа ([Voices.md](components/Voices.md));
 - мягкий лимит 300 и граница 14 дней в `!purge` ([purge.md](components/purge.md));
@@ -75,7 +75,7 @@ Discord-специфичные вызовы (создание канала, вы
 | `#бот-команды` | View, Send Messages, Embed Links | mute, banKick, purge, Voices |
 | `#антиработяги` | View, Send Messages, Embed Links | anti |
 | `#аудит` | View, Send Messages, Embed Links | roleGiver |
-| `#выдача-работяг` | View, Send Messages | roleGiver |
+| `#выдача-работяг` | View, Send Messages, Bypass Slowmode (канал в медленном режиме, см. [components/roleGiver.md](components/roleGiver.md)) | roleGiver |
 | `#баны` | View, Send Messages, Embed Links | banKick |
 | `#чек-лист` | View, Send Messages, Embed Links | moderationChat |
 | `#чек-лист2` | View, Send Messages, Embed Links | moderationChat |
