@@ -23,6 +23,7 @@ import discord
 from discord.ext import commands
 
 from connor.config import Config
+from connor.core.permissions import CommandPermissionsCache
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +50,8 @@ class ConnorBot(commands.Bot):
             allowed_mentions=discord.AllowedMentions.none(),
         )
         self._guild = discord.Object(id=config.guild_id)
+        #: реплика Command Permissions для !-пути (создаётся в setup_hook)
+        self.command_perms: CommandPermissionsCache | None = None
 
     async def setup_hook(self) -> None:
         for ext in COGS:
@@ -60,6 +63,39 @@ class ConnorBot(commands.Bot):
         log.info(
             "slash-дерево синкнуто на гильдию %d: команд %d", self.config.guild_id, len(synced)
         )
+
+        # Command Permissions: живой GET на старте; при неудаче !-путь с гейтом
+        # остаётся закрытым (fail closed) до успешной загрузки/обновления.
+        assert self.application_id is not None
+        self.command_perms = CommandPermissionsCache(
+            application_id=self.application_id, guild_id=self.config.guild_id
+        )
+        try:
+            await self.command_perms.load(
+                self.http, command_ids={cmd.name: cmd.id for cmd in synced}
+            )
+            log.info("Command Permissions загружены с API")
+        except discord.HTTPException as exc:
+            log.error(
+                "не удалось загрузить Command Permissions на старте (%s) — "
+                "гейт !-команд закрыт (fail closed) до обновления по gateway",
+                exc,
+            )
+
+    async def on_raw_app_command_permissions_update(
+        self, payload: discord.RawAppCommandPermissionsUpdateEvent
+    ) -> None:
+        if (
+            self.command_perms is None
+            or payload.application_id != self.application_id
+            or payload.guild.id != self.config.guild_id
+        ):
+            return
+        self.command_perms.apply_update(
+            target_id=payload.target_id,
+            overwrites=[(p.id, p.type.value, p.permission) for p in payload.permissions],
+        )
+        log.info("Command Permissions обновлены (target_id=%d)", payload.target_id)
 
     async def on_ready(self) -> None:
         if self.user is not None:

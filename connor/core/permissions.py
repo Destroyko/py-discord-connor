@@ -10,13 +10,15 @@ Discord фильтрует по этому слою только slash-вызо�
     канал (disable абсолютен) → оверрайд по user → оверрайды по ролям (allow > deny)
     → @everyone → default_member_permissions команды
 
-Загрузка с API, кэш и обновление по gateway-событию — ``CommandPermissionsCache``
-(P1.5b), не тестируется юнитами.
+``CommandPermissionsCache`` держит разобранную конфигурацию, грузит её живым GET на
+старте и обновляет по gateway-событию ``on_raw_app_command_permissions_update``.
+Пока кэш не прогружен — ``allows()`` возвращает ``False`` для всего (fail closed).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Protocol
 
 # discord ApplicationCommandPermissionType
 _TYPE_ROLE = 1
@@ -125,3 +127,98 @@ def can_run_prefix(
     if not _channel_enabled(perms, channel_id, guild_id):
         return False
     return _member_allowed(perms, member_role_ids, member_id, guild_id, has_default_perms)
+
+
+# --------------------------------------------------------------------------- #
+# Рантайм-кэш
+# --------------------------------------------------------------------------- #
+
+
+class _PermsHTTP(Protocol):
+    async def get_guild_application_command_permissions(
+        self, application_id: int, guild_id: int
+    ) -> list[dict]: ...
+
+
+class CommandPermissionsCache:
+    """Разобранные Command Permissions гильдии + карта имя команды → id.
+
+    ``load`` — живой GET на старте; ``apply_update`` — по gateway-событию.
+    ``allows`` fail-closed: пока не прогружено (или сброшено ``invalidate``) — ``False``.
+    """
+
+    def __init__(self, *, application_id: int, guild_id: int) -> None:
+        self._application_id = application_id
+        self._guild_id = guild_id
+        self._resolved: ResolvedPermissions | None = None
+        self._name_to_id: dict[str, int] = {}
+
+    @property
+    def ready(self) -> bool:
+        return self._resolved is not None
+
+    async def load(self, http: _PermsHTTP, *, command_ids: dict[str, int]) -> None:
+        raw = await http.get_guild_application_command_permissions(
+            self._application_id, self._guild_id
+        )
+        self._name_to_id = dict(command_ids)
+        self._resolved = parse_guild_command_permissions(
+            list(raw), application_id=self._application_id
+        )
+
+    def invalidate(self) -> None:
+        self._resolved = None
+
+    def apply_update(self, *, target_id: int, overwrites: list[tuple[int, int, bool]]) -> None:
+        """Обновить одну команду (или app-level дефолт, если ``target_id`` == app id).
+
+        ``overwrites``: список ``(id, type_value, permission)``; ``type_value`` —
+        1 роль / 2 user / 3 канал. Пустой список = оверрайды сняты → команда
+        выпадает из ``per_command`` (падает на app-level дефолт).
+        """
+        if self._resolved is None:
+            return  # прилетит при следующем load
+
+        if target_id == self._application_id:
+            app_default = (
+                CommandPerms.from_overwrites(_as_dicts(overwrites)) if overwrites else None
+            )
+            self._resolved = ResolvedPermissions(self._resolved.per_command, app_default)
+            return
+
+        per_command = dict(self._resolved.per_command)
+        if overwrites:
+            per_command[target_id] = CommandPerms.from_overwrites(_as_dicts(overwrites))
+        else:
+            per_command.pop(target_id, None)
+        self._resolved = ResolvedPermissions(per_command, self._resolved.app_default)
+
+    def allows(
+        self,
+        *,
+        command_name: str,
+        member_role_ids: frozenset[int],
+        member_id: int,
+        channel_id: int,
+        has_default_perms: bool,
+    ) -> bool:
+        if self._resolved is None:
+            return False  # fail closed
+        command_id = self._name_to_id.get(command_name)
+        perms = (
+            self._resolved.for_command(command_id)
+            if command_id is not None
+            else self._resolved.app_default
+        )
+        return can_run_prefix(
+            perms=perms,
+            member_role_ids=member_role_ids,
+            member_id=member_id,
+            channel_id=channel_id,
+            guild_id=self._guild_id,
+            has_default_perms=has_default_perms,
+        )
+
+
+def _as_dicts(overwrites: list[tuple[int, int, bool]]) -> list[dict]:
+    return [{"id": i, "type": t, "permission": p} for i, t, p in overwrites]

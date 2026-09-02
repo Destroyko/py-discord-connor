@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from connor.core.permissions import (
+    CommandPermissionsCache,
     CommandPerms,
     can_run_prefix,
     parse_guild_command_permissions,
@@ -133,3 +134,108 @@ def test_channel_enabled_then_member_check() -> None:
     perms = CommandPerms(role={10: True}, channel={42: True})
     assert _run(perms, roles=frozenset({10}), channel=42) is True
     assert _run(perms, roles=frozenset({8}), channel=42, default=False) is False
+
+
+# --------------------------------------------------------------------------- #
+# CommandPermissionsCache
+# --------------------------------------------------------------------------- #
+
+
+class _FakeHTTP:
+    def __init__(self, raw: list[dict]) -> None:
+        self._raw = raw
+
+    async def get_guild_application_command_permissions(
+        self, application_id: int, guild_id: int
+    ) -> list[dict]:
+        return self._raw
+
+
+def _allows(
+    cache: CommandPermissionsCache,
+    *,
+    name: str = "mute",
+    roles=frozenset(),
+    member=1,
+    channel=42,
+    default=False,
+) -> bool:
+    return cache.allows(
+        command_name=name,
+        member_role_ids=roles,
+        member_id=member,
+        channel_id=channel,
+        has_default_perms=default,
+    )
+
+
+async def _loaded_cache(raw: list[dict]) -> CommandPermissionsCache:
+    cache = CommandPermissionsCache(application_id=APP, guild_id=GUILD)
+    await cache.load(_FakeHTTP(raw), command_ids={"mute": 777, "ban": 888})
+    return cache
+
+
+async def test_cache_not_ready_is_fail_closed() -> None:
+    cache = CommandPermissionsCache(application_id=APP, guild_id=GUILD)
+    assert cache.ready is False
+    assert _allows(cache, default=True) is False  # даже если участник прошёл бы по default
+
+
+async def test_cache_load_and_lookup_by_name() -> None:
+    cache = await _loaded_cache(
+        [{"id": "777", "permissions": [{"id": "10", "type": 1, "permission": True}]}]
+    )
+    assert cache.ready is True
+    assert _allows(cache, name="mute", roles=frozenset({10})) is True
+    assert _allows(cache, name="mute", roles=frozenset({99}), default=False) is False
+
+
+async def test_cache_unknown_command_uses_app_default() -> None:
+    cache = await _loaded_cache(
+        [{"id": str(APP), "permissions": [{"id": str(EVERYONE), "type": 1, "permission": True}]}]
+    )
+    assert _allows(cache, name="ladder") is True  # нет в name_to_id -> app_default (everyone allow)
+
+
+async def test_cache_apply_update_adds_command() -> None:
+    cache = await _loaded_cache([])
+    assert _allows(cache, name="mute", roles=frozenset({10}), default=False) is False
+    cache.apply_update(target_id=777, overwrites=[(10, 1, True)])
+    assert _allows(cache, name="mute", roles=frozenset({10}), default=False) is True
+
+
+async def test_cache_apply_update_clear_falls_back_to_app_default() -> None:
+    cache = await _loaded_cache(
+        [
+            {
+                "id": str(APP),
+                "permissions": [{"id": str(EVERYONE), "type": 1, "permission": False}],
+            },
+            {"id": "777", "permissions": [{"id": "10", "type": 1, "permission": True}]},
+        ]
+    )
+    assert _allows(cache, name="mute", roles=frozenset({10})) is True
+    cache.apply_update(target_id=777, overwrites=[])  # сняли все оверрайды команды
+    assert _allows(cache, name="mute", roles=frozenset({10})) is False  # теперь app_default (deny)
+
+
+async def test_cache_apply_update_app_level() -> None:
+    cache = await _loaded_cache([])
+    assert _allows(cache, name="ladder", default=False) is False
+    cache.apply_update(target_id=APP, overwrites=[(EVERYONE, 1, True)])
+    assert _allows(cache, name="ladder", default=False) is True
+
+
+async def test_cache_apply_update_before_load_is_noop() -> None:
+    cache = CommandPermissionsCache(application_id=APP, guild_id=GUILD)
+    cache.apply_update(target_id=777, overwrites=[(10, 1, True)])
+    assert cache.ready is False
+
+
+async def test_cache_invalidate_reverts_to_fail_closed() -> None:
+    cache = await _loaded_cache(
+        [{"id": "777", "permissions": [{"id": "10", "type": 1, "permission": True}]}]
+    )
+    cache.invalidate()
+    assert cache.ready is False
+    assert _allows(cache, name="mute", roles=frozenset({10})) is False
