@@ -39,6 +39,7 @@ COGS: tuple[str, ...] = (
     "connor.cogs.moderation_chat",
     "connor.cogs.anti",
     "connor.cogs.check",
+    "connor.cogs.role_giver",
 )
 
 # --- таблицы для preflight (development.md § "Стартовая диагностика") --------
