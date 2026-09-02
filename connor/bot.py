@@ -34,6 +34,7 @@ log = logging.getLogger(__name__)
 COGS: tuple[str, ...] = (
     "connor.cogs.healthcheck",
     "connor.cogs.ban_kick",
+    "connor.cogs.mute",
 )
 
 # --- таблицы для preflight (development.md § "Стартовая диагностика") --------

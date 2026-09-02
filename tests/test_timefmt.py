@@ -12,6 +12,7 @@ from connor.core.timefmt import (
     fmt_full,
     fmt_full_minute,
     fmt_short,
+    format_hms,
     parse_duration,
     parse_mute_duration,
 )
@@ -90,3 +91,11 @@ def test_parse_mute_duration_out_of_range(text: str) -> None:
 def test_parse_mute_duration_bad_format(text: str) -> None:
     with pytest.raises(ValueError):
         parse_mute_duration(text)
+
+
+def test_format_hms() -> None:
+    assert format_hms(0) == "0д 0ч 0м"
+    assert format_hms(59) == "0д 0ч 0м"
+    assert format_hms(60) == "0д 0ч 1м"
+    assert format_hms(4 * 86400 + 3 * 3600 + 12 * 60 + 5) == "4д 3ч 12м"
+    assert format_hms(-10) == "0д 0ч 0м"

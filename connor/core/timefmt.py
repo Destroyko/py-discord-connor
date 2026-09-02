@@ -56,6 +56,15 @@ def fmt_short(value: datetime | int | float) -> str:
     return _to_msk(value).strftime("%d.%m.%y %H:%M:%S")
 
 
+def format_hms(total_seconds: int) -> str:
+    """``4д 3ч 12м`` — грубая длительность (аптайм, остаток таймаута)."""
+    total_seconds = max(0, total_seconds)
+    days, rem = divmod(total_seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    return f"{days}д {hours}ч {minutes}м"
+
+
 # --------------------------------------------------------------------------- #
 # Длительность мьюта
 # --------------------------------------------------------------------------- #

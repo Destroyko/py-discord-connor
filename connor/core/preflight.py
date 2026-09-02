@@ -36,15 +36,6 @@ def any_fatal(results: list[CheckResult]) -> bool:
     return any(not r.ok and r.fatal for r in results)
 
 
-def format_uptime(total_seconds: int) -> str:
-    """``4д 3ч 12м`` — для строки «Аптайм» в ``/healthcheck``."""
-    total_seconds = max(0, total_seconds)
-    days, rem = divmod(total_seconds, 86400)
-    hours, rem = divmod(rem, 3600)
-    minutes = rem // 60
-    return f"{days}д {hours}ч {minutes}м"
-
-
 def summary_line(results: list[CheckResult]) -> str:
     errors = [r for r in results if not r.ok]
     if not errors:

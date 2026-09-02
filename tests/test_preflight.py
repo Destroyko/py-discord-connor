@@ -12,7 +12,6 @@ from connor.core.preflight import (
     check_guild_permissions,
     check_intents,
     check_managed_role,
-    format_uptime,
     summary_line,
 )
 
@@ -105,11 +104,3 @@ def test_any_fatal_and_summary() -> None:
     ]
     assert any_fatal(with_fatal) is True
     assert "НЕ поднят" in summary_line(with_fatal)
-
-
-def test_format_uptime() -> None:
-    assert format_uptime(0) == "0д 0ч 0м"
-    assert format_uptime(59) == "0д 0ч 0м"
-    assert format_uptime(60) == "0д 0ч 1м"
-    assert format_uptime(4 * 86400 + 3 * 3600 + 12 * 60 + 5) == "4д 3ч 12м"
-    assert format_uptime(-10) == "0д 0ч 0м"

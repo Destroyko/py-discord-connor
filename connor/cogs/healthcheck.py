@@ -16,6 +16,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from connor.core import preflight
+from connor.core.timefmt import format_hms
 
 if TYPE_CHECKING:
     from connor.bot import ConnorBot
@@ -47,7 +48,7 @@ def _uptime_line(bot: ConnorBot) -> str:
     ready_at = getattr(bot, "_ready_at", None)
     if ready_at is None:
         return "Аптайм: н/д"
-    return "Аптайм: " + preflight.format_uptime(int(time.monotonic() - ready_at))
+    return "Аптайм: " + format_hms(int(time.monotonic() - ready_at))
 
 
 async def setup(bot: commands.Bot) -> None:
