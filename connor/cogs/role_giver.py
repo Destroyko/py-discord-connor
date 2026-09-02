@@ -21,6 +21,7 @@ from discord import app_commands
 from discord.ext import commands
 from discord.utils import utcnow
 
+from connor.core.authorship import embed_author_icon, embed_author_name
 from connor.core.resolve import EntityResolver
 from connor.core.timefmt import fmt_short
 from connor.db.repo_anti import RepoAnti
@@ -264,8 +265,8 @@ class RoleGiver(commands.Cog):
                 return
         await audit.send(
             embed=build_audit_embed(
-                mod_name=mod.display_name,
-                mod_icon=mod.display_avatar.url,
+                mod_name=embed_author_name(mod),
+                mod_icon=embed_author_icon(mod),
                 target_mention=target_mention,
                 approved=approved,
             )

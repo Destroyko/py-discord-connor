@@ -50,9 +50,11 @@ def test_build_role_removed_embed() -> None:
     assert e.colour == discord.Color.red()
     assert e.author.name is None  # без модератора
 
-    m = SimpleNamespace(display_name="enteii", display_avatar=SimpleNamespace(url="http://a"))
+    m = SimpleNamespace(
+        name="enteii", display_name="СерверныйНик", display_avatar=SimpleNamespace(url="http://a")
+    )
     e2 = build_role_removed_embed("<@5>", moderator=m)
-    assert e2.author.name == "enteii"
+    assert e2.author.name == "enteii"  # username, не серверный ник
 
 
 # --- /add, /del flow (real DB, fake Discord) -----------------------------------
@@ -219,7 +221,10 @@ def _entry(*, target_id: int, actor_id: int, granted: bool) -> SimpleNamespace:
     return SimpleNamespace(
         target=SimpleNamespace(id=target_id),
         user=SimpleNamespace(
-            id=actor_id, display_name=f"mod{actor_id}", display_avatar=SimpleNamespace(url="u")
+            id=actor_id,
+            name=f"mod{actor_id}",
+            display_name=f"nick{actor_id}",
+            display_avatar=SimpleNamespace(url="u"),
         ),
         after=SimpleNamespace(roles=role_side if granted else []),
         before=SimpleNamespace(roles=[] if granted else role_side),

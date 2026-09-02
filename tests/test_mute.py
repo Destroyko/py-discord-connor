@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import discord
 
@@ -15,8 +15,15 @@ from connor.cogs.mute import (
     _rules_link,
     build_mute_channel_embed,
     build_mute_dm_embed,
+    build_pending_mute_embed,
 )
-from connor.core.texts import ERR_NO_TARGET, REASON_NOT_GIVEN, SELF_MODERATION
+from connor.core.texts import (
+    ERR_NO_TARGET,
+    ERR_TARGET_ABSENT,
+    REASON_NOT_GIVEN,
+    SELF_MODERATION,
+)
+from connor.db.repo_pending_mute import RepoPendingMute
 
 # --- pure builders -------------------------------------------------------------
 
@@ -70,7 +77,12 @@ def test_channel_embed_first_and_update() -> None:
 
 
 def _config() -> SimpleNamespace:
-    return SimpleNamespace(roles={"MOLCHUN": 111}, mute=SimpleNamespace(rules_url=""))
+    return SimpleNamespace(
+        guild_id=1,
+        roles={"MOLCHUN": 111},
+        channels={"BOT_KOMANDY": 222},
+        mute=SimpleNamespace(rules_url="", pending_mute_retention_days=30),
+    )
 
 
 def _member(
@@ -82,6 +94,7 @@ def _member(
         mention=f"<@{mid}>",
         roles=[],
         top_role=SimpleNamespace(position=pos),
+        name=f"user{mid}",  # username (в author-строку идёт он, не серверный ник)
         display_name=f"u{mid}",
         display_avatar=SimpleNamespace(url="http://a"),
         timed_out_until=None,
@@ -104,8 +117,8 @@ def _ctx(*, members: dict[int, SimpleNamespace]):
     return SimpleNamespace(guild=guild, author=_member(1, pos=10), send=AsyncMock())
 
 
-def _cog() -> Mute:
-    return Mute(SimpleNamespace(config=_config()))  # type: ignore[arg-type]
+def _cog(db: object | None = None) -> Mute:
+    return Mute(SimpleNamespace(config=_config(), db=db))  # type: ignore[arg-type]
 
 
 async def _mute(
@@ -177,3 +190,208 @@ async def test_mute_update_blocked_by_reservation() -> None:
     await _mute(ctx, "2", "48h", cog=cog)
     ctx.send.assert_awaited_once_with(_ERR_ALREADY_MUTED)
     member.timeout.assert_not_awaited()
+
+
+# --- отложенный мут (цель вышла с сервера до наказания) ----------------------
+
+
+def _pending_bot(db: object, *, bot_komandy: object | None = None, fetch_user_ok: bool = True):
+    fetch_user = (
+        AsyncMock(return_value=SimpleNamespace(id=0))
+        if fetch_user_ok
+        else AsyncMock(side_effect=discord.NotFound(MagicMock(status=404), "no"))
+    )
+    return SimpleNamespace(
+        config=_config(),
+        db=db,
+        get_channel=lambda cid: bot_komandy if cid == 222 else None,
+        fetch_user=fetch_user,
+    )
+
+
+def _pending_ctx(author_id: int = 1):
+    guild = SimpleNamespace(
+        name="Коннор", owner_id=999, get_member=lambda _i: None, get_role=lambda _i: None
+    )
+    return SimpleNamespace(guild=guild, author=_member(author_id, pos=10), send=AsyncMock())
+
+
+def test_pending_embed_is_blue_with_date() -> None:
+    e = build_pending_mute_embed(until_ts=1_760_000_000)
+    assert e.colour == discord.Color.blue()
+    assert "вернётся до" in e.description
+
+
+async def test_mute_absent_target_queues_pending(db) -> None:
+    ctx = _pending_ctx(author_id=7)
+    cog = Mute(_pending_bot(db))  # type: ignore[arg-type]
+
+    await Mute.mute.callback(cog, ctx, "777", "24h", reason="п12")
+
+    entry = await RepoPendingMute(db).get(777)
+    assert entry is not None
+    assert (entry.duration, entry.reason, entry.moderator_id) == ("24h", "п12", 7)
+    embed = ctx.send.await_args.kwargs["embed"]
+    assert embed.colour == discord.Color.blue()
+
+
+async def test_mute_absent_target_bad_time_not_queued(db) -> None:
+    ctx = _pending_ctx()
+    cog = Mute(_pending_bot(db))  # type: ignore[arg-type]
+
+    await Mute.mute.callback(cog, ctx, "777", "1h30m")
+
+    assert await RepoPendingMute(db).get(777) is None
+    ctx.send.assert_awaited_once_with(_ERR_BAD_TIME)
+
+
+async def test_mute_absent_garbage_id_not_queued(db) -> None:
+    ctx = _pending_ctx()
+    cog = Mute(_pending_bot(db, fetch_user_ok=False))  # type: ignore[arg-type]
+
+    await Mute.mute.callback(cog, ctx, "424242", "24h")
+
+    assert await RepoPendingMute(db).get(424242) is None
+    ctx.send.assert_awaited_once_with(ERR_TARGET_ABSENT)
+
+
+async def test_pending_applied_on_join_indistinguishable_from_normal_mute(db) -> None:
+    await RepoPendingMute(db).upsert(5, duration="24h", reason="п12", moderator_id=1, queued_at=100)
+    bot_komandy = SimpleNamespace(send=AsyncMock())
+    mod = _member(1)
+    mod.display_name = "mod1"
+    guild = SimpleNamespace(
+        name="Коннор",
+        get_member=lambda i: mod if i == 1 else None,
+        get_role=lambda _i: SimpleNamespace(id=111),
+    )
+    member = _member(5, pos=1)
+    member.guild = guild
+    cog = Mute(_pending_bot(db, bot_komandy=bot_komandy))  # type: ignore[arg-type]
+
+    await Mute.on_member_join(cog, member)
+
+    member.timeout.assert_awaited_once()
+    member.add_roles.assert_awaited_once()
+    member.send.assert_awaited_once()  # DM как при обычном муте
+    ch_embed = bot_komandy.send.await_args.kwargs["embed"]
+    assert ch_embed.description == "<@5> замьючен на 24h"  # ни намёка на отложенность
+    assert ch_embed.fields[0].value == "п12"
+    assert await RepoPendingMute(db).get(5) is None  # запись снята
+    assert cog.state.last_time(5) == "24h"
+
+
+async def test_pending_apply_resolves_moderator_via_fetch_member(db) -> None:
+    # модератор ещё на сервере, но не в кэше → берём через fetch_member; в author
+    # идёт username, не серверный ник
+    await RepoPendingMute(db).upsert(5, duration="1h", reason="п", moderator_id=1, queued_at=100)
+    bot_komandy = SimpleNamespace(send=AsyncMock())
+    mod = _member(1)
+    mod.name = "mod_username"
+    mod.display_name = "СерверныйНик"
+    mod.display_avatar = SimpleNamespace(url="http://global-avatar")
+    guild = SimpleNamespace(
+        name="Коннор",
+        get_member=lambda _i: None,
+        get_role=lambda _i: SimpleNamespace(id=111),
+        fetch_member=AsyncMock(return_value=mod),
+    )
+    member = _member(5)
+    member.guild = guild
+    cog = Mute(_pending_bot(db, bot_komandy=bot_komandy))  # type: ignore[arg-type]
+
+    await Mute.on_member_join(cog, member)
+
+    e = bot_komandy.send.await_args.kwargs["embed"]
+    assert e.author.name == "mod_username"  # username, не "СерверныйНик"
+    assert e.author.icon_url == "http://global-avatar"
+
+
+async def test_pending_apply_moderator_gone_falls_back_to_raw_id(db) -> None:
+    # модератор ушёл с сервера и не резолвится глобально → голый id, без иконки
+    await RepoPendingMute(db).upsert(5, duration="1h", reason="п", moderator_id=42, queued_at=100)
+    bot_komandy = SimpleNamespace(send=AsyncMock())
+    guild = SimpleNamespace(
+        name="Коннор",
+        get_member=lambda _i: None,
+        get_role=lambda _i: SimpleNamespace(id=111),
+        fetch_member=AsyncMock(side_effect=discord.NotFound(MagicMock(status=404), "gone")),
+    )
+    member = _member(5)
+    member.guild = guild
+    cog = Mute(_pending_bot(db, bot_komandy=bot_komandy, fetch_user_ok=False))  # type: ignore[arg-type]
+
+    await Mute.on_member_join(cog, member)
+
+    e = bot_komandy.send.await_args.kwargs["embed"]
+    assert e.author.name == "42"
+    assert e.author.icon_url is None
+
+
+async def test_pending_join_timeout_failure_keeps_record(db) -> None:
+    await RepoPendingMute(db).upsert(5, duration="24h", reason="п", moderator_id=1, queued_at=100)
+    guild = SimpleNamespace(name="X", get_member=lambda _i: None, get_role=lambda _i: None)
+    member = _member(5)
+    member.guild = guild
+    member.timeout = AsyncMock(side_effect=discord.HTTPException(MagicMock(status=500), "boom"))
+    cog = Mute(_pending_bot(db))  # type: ignore[arg-type]
+
+    await Mute.on_member_join(cog, member)
+
+    assert await RepoPendingMute(db).get(5) is not None  # не удалили — попробуем позже
+
+
+async def test_unmute_absent_cancels_pending(db) -> None:
+    await RepoPendingMute(db).upsert(5, duration="1h", reason="п", moderator_id=1, queued_at=100)
+    ctx = _pending_ctx()
+    cog = Mute(_pending_bot(db))  # type: ignore[arg-type]
+
+    await Mute.unmute.callback(cog, ctx, "5")
+
+    assert await RepoPendingMute(db).get(5) is None
+    msg = ctx.send.await_args.args[0]
+    assert "отмен" in msg.lower() and "<@5>" in msg
+
+
+async def test_unmute_absent_no_pending_is_absent_error(db) -> None:
+    ctx = _pending_ctx()
+    cog = Mute(_pending_bot(db))  # type: ignore[arg-type]
+
+    await Mute.unmute.callback(cog, ctx, "5")
+
+    ctx.send.assert_awaited_once_with(ERR_TARGET_ABSENT)
+
+
+async def test_sweep_pending_purges_only_expired(db) -> None:
+    repo = RepoPendingMute(db)
+    now = int(discord.utils.utcnow().timestamp())
+    await repo.upsert(1, duration="1h", reason="a", moderator_id=9, queued_at=now - 40 * 86400)
+    await repo.upsert(2, duration="1h", reason="b", moderator_id=9, queued_at=now - 5 * 86400)
+    cog = Mute(_pending_bot(db))  # type: ignore[arg-type]
+
+    await Mute._sweep_pending.coro(cog)
+
+    assert await repo.get(1) is None  # старше retention (30 дн)
+    assert await repo.get(2) is not None  # свежая — осталась
+
+
+async def test_pending_applied_on_startup_if_member_returned_during_downtime(db) -> None:
+    await RepoPendingMute(db).upsert(5, duration="1h", reason="п", moderator_id=1, queued_at=100)
+    bot_komandy = SimpleNamespace(send=AsyncMock())
+    member = _member(5)
+    guild = SimpleNamespace(
+        name="Коннор",
+        get_member=lambda i: member if i == 5 else None,
+        get_role=lambda _i: SimpleNamespace(id=111),
+        fetch_member=AsyncMock(return_value=member),
+    )
+    member.guild = guild
+    bot = _pending_bot(db, bot_komandy=bot_komandy)
+    bot.get_guild = lambda _i: guild
+    cog = Mute(bot)  # type: ignore[arg-type]
+
+    await Mute.on_ready(cog)
+
+    member.timeout.assert_awaited_once()
+    assert await RepoPendingMute(db).get(5) is None
+    assert cog._pending_startup_done is True

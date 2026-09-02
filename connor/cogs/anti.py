@@ -21,6 +21,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from connor.core.authorship import embed_author_icon, embed_author_name
 from connor.core.resolve import EntityResolver
 from connor.core.targets import parse_target_id
 from connor.core.texts import ERR_NO_TARGET, REASON_NOT_GIVEN
@@ -85,7 +86,9 @@ def build_role_removed_embed(
         description=_ROLE_REMOVED_DESC.format(mention=mention), colour=discord.Color.red()
     )
     if moderator is not None:
-        embed.set_author(name=moderator.display_name, icon_url=moderator.display_avatar.url)
+        embed.set_author(
+            name=embed_author_name(moderator), icon_url=embed_author_icon(moderator)
+        )
     return embed
 
 

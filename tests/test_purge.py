@@ -115,12 +115,12 @@ def test_match_links_images_text() -> None:
 
 def test_build_purge_log_embed() -> None:
     embed = build_purge_log_embed(
-        author_global_name=".destroyko",
+        author_username=".destroyko",
         author_icon="http://a",
         nick_text="enteii",
         raw_args="text 1",
         channel="#флудиславль",
     )
-    assert embed.author.name == ".destroyko"
+    assert embed.author.name == ".destroyko"  # username, не серверный ник
     assert embed.description == "enteii использовал :pudge: text 1 в канале #флудиславль"
     assert isinstance(embed, discord.Embed)

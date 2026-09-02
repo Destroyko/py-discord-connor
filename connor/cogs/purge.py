@@ -20,6 +20,7 @@ import discord
 from discord.ext import commands
 from discord.utils import utcnow
 
+from connor.core.authorship import embed_author_icon, embed_author_name
 from connor.core.channels import in_roddom
 from connor.core.targets import parse_target_id
 
@@ -151,12 +152,12 @@ def _view(message: discord.Message) -> MsgView:
 
 
 def build_purge_log_embed(
-    *, author_global_name: str, author_icon: str | None, nick_text: str, raw_args: str, channel: str
+    *, author_username: str, author_icon: str | None, nick_text: str, raw_args: str, channel: str
 ) -> discord.Embed:
     embed = discord.Embed(
         description=f"{nick_text} использовал :pudge: {raw_args} в канале {channel}"
     )
-    embed.set_author(name=author_global_name, icon_url=author_icon)
+    embed.set_author(name=author_username, icon_url=author_icon)
     return embed
 
 
@@ -216,8 +217,8 @@ class Purge(commands.Cog):
             return
         author = ctx.author
         embed = build_purge_log_embed(
-            author_global_name=author.global_name or author.name,
-            author_icon=author.display_avatar.url,
+            author_username=embed_author_name(author),
+            author_icon=embed_author_icon(author),
             nick_text=author.display_name,
             raw_args=" ".join(args),
             channel=ctx.channel.mention,

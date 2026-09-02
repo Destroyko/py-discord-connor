@@ -71,6 +71,7 @@ class ConfigError(Exception):
 class MuteConfig:
     rules_url: str
     reservation_seconds: int
+    pending_mute_retention_days: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,6 +255,9 @@ def load_config(
     mute = MuteConfig(
         rules_url=c.toml_str(mt, "config/mute.toml", "rules_url", allow_empty=True),
         reservation_seconds=c.toml_int(mt, "config/mute.toml", "reservation_seconds"),
+        pending_mute_retention_days=c.toml_int(
+            mt, "config/mute.toml", "pending_mute_retention_days"
+        ),
     )
 
     rg = _load_toml(c, "role_giver.toml", cdir)

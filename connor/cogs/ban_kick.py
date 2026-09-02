@@ -17,6 +17,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from connor.core.authorship import embed_author_icon, embed_author_name
 from connor.core.hierarchy import (
     HierarchyBlock,
     HierarchyInput,
@@ -64,8 +65,8 @@ class BanKick(commands.Cog):
     def _embed_for(self, ctx: commands.Context, description: str, reason: str) -> discord.Embed:
         author = ctx.author
         return build_mod_embed(
-            author_name=author.display_name,
-            author_icon=author.display_avatar.url,
+            author_name=embed_author_name(author),
+            author_icon=embed_author_icon(author),
             description=description,
             reason=reason,
         )

@@ -47,6 +47,7 @@ def _member(mid: int, *, pos: int = 1, bot: bool = False) -> SimpleNamespace:
         bot=bot,
         mention=f"<@{mid}>",
         top_role=SimpleNamespace(position=pos),
+        name=f"user{mid}",  # username → идёт в author-строку embed'а
         display_name=f"u{mid}",
         display_avatar=SimpleNamespace(url="http://a"),
     )
