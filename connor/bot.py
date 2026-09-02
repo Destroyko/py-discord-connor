@@ -31,7 +31,10 @@ from connor.db import Database
 log = logging.getLogger(__name__)
 
 #: Пути когов для ``load_extension``. Каждый модуль добавляет себя в своей фазе.
-COGS: tuple[str, ...] = ("connor.cogs.healthcheck",)
+COGS: tuple[str, ...] = (
+    "connor.cogs.healthcheck",
+    "connor.cogs.ban_kick",
+)
 
 # --- таблицы для preflight (development.md § "Стартовая диагностика") --------
 
@@ -135,10 +138,14 @@ class ConnorBot(commands.Bot):
     ) -> None:
         # Молчим на неизвестную команду и на любой заблокированный вызов
         # (DM-guard, Command Permissions на !-пути) — так требует rules.md.
-        if isinstance(exception, commands.CommandNotFound | commands.CheckFailure):
+        # UserInputError (не хватает/битый аргумент) модули ловят сами (cog_command_error)
+        # и отвечают точным текстом из спеки — глобально по нему тоже молчим.
+        if isinstance(
+            exception,
+            commands.CommandNotFound | commands.CheckFailure | commands.UserInputError,
+        ):
             return
-        # Ошибки разбора аргументов модули ловят сами и отвечают точным текстом;
-        # сюда попадает только неожиданное — логируем с контекстом, не голым traceback.
+        # Сюда попадает только неожиданное — логируем с контекстом, не голым traceback.
         log.error(
             "ошибка команды %s (вызвал %s в %s): %s",
             context.command,
