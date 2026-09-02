@@ -10,6 +10,7 @@ from connor.core.timefmt import (
     MUTE_MAX_SECONDS,
     MUTE_MIN_SECONDS,
     fmt_full,
+    fmt_full_minute,
     fmt_short,
     parse_duration,
     parse_mute_duration,
@@ -26,6 +27,10 @@ def test_fmt_full_msk() -> None:
 
 def test_fmt_short_msk() -> None:
     assert fmt_short(_INSTANT_UTC) == "16.08.26 18:49:30"
+
+
+def test_fmt_full_minute_msk() -> None:
+    assert fmt_full_minute(_INSTANT_UTC) == "16-08-2026 18:49"
 
 
 def test_fmt_accepts_epoch_int_and_float() -> None:

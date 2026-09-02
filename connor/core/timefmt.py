@@ -4,8 +4,9 @@
 фиксированно, независимо от таймзоны VPS (``environment.md`` § "Технический стек").
 Два формата из спеки:
 
-- ``fmt_full``  → ``16-08-2026 18:49:30`` (тире, 4-значный год) — ``anti.md`` "Дата добавления";
-- ``fmt_short`` → ``13.12.25 19:21:36`` (точки, 2-значный год) — ``roleGiver.md``
+- ``fmt_full``        → ``16-08-2026 18:49:30`` (тире, 4-зн. год) — ``anti.md`` "Дата добавления";
+- ``fmt_full_minute`` → ``16-08-2026 18:49``    (без секунд) — футер embed'ов ``anti.md``;
+- ``fmt_short``       → ``13.12.25 19:21:36``   (точки, 2-зн. год) — ``roleGiver.md``
   "Дата регистрации" / "Дата присоединения".
 
 **Длительность мьюта.** Один число + один суффикс ``s/m/h/d``; диапазон 60s..28d
@@ -43,6 +44,11 @@ def _to_msk(value: datetime | int | float) -> datetime:
 def fmt_full(value: datetime | int | float) -> str:
     """``16-08-2026 18:49:30`` (MSK)."""
     return _to_msk(value).strftime("%d-%m-%Y %H:%M:%S")
+
+
+def fmt_full_minute(value: datetime | int | float) -> str:
+    """``16-08-2026 18:49`` (MSK, без секунд)."""
+    return _to_msk(value).strftime("%d-%m-%Y %H:%M")
 
 
 def fmt_short(value: datetime | int | float) -> str:
