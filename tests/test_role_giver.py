@@ -197,6 +197,19 @@ async def test_give_clean_account_instant_grant(db: Database) -> None:
     assert ctx.send.await_args.args[0] == _GRANTED
 
 
+async def test_give_clean_account_grant_fails_stays_silent(db: Database) -> None:
+    guild = SimpleNamespace(get_role=lambda _i: None)  # роль «работяга» не резолвится
+    member = _member(
+        5, created=_NOW - timedelta(days=400), joined=_NOW - timedelta(days=90), guild=guild
+    )
+    ctx = _ctx(guild, member)
+
+    await _give(RoleGiver(_bot(db)), ctx)  # type: ignore[arg-type]
+
+    member.add_roles.assert_not_awaited()
+    ctx.send.assert_not_awaited()  # ни успеха, ни ошибки пользователю — только серверный лог
+
+
 async def test_give_suspicious_opens_manual_review(db: Database) -> None:
     review_msg = SimpleNamespace(id=777, add_reaction=AsyncMock())
     rekvesty = SimpleNamespace(send=AsyncMock(return_value=review_msg))
@@ -258,6 +271,34 @@ async def test_reaction_approve_grants_and_logs(db: Database) -> None:
     assert "роль выдана." in vydacha.send.await_args.args[0]
     audit.send.assert_awaited_once()
     assert await RepoGive(db).get(777) is None  # заявка снята
+
+
+async def test_reaction_approve_grant_fails_no_announcements(db: Database) -> None:
+    await RepoGive(db).add(777, user_id=5, created_at=1)
+    target = MagicMock(spec=discord.Member)
+    target.id = 5
+    target.mention = "<@5>"
+    target.add_roles = AsyncMock(
+        side_effect=discord.HTTPException(MagicMock(status=500), "boom")
+    )
+    role = MagicMock(spec=discord.Role)
+    audit = SimpleNamespace(send=AsyncMock())
+    vydacha = SimpleNamespace(send=AsyncMock())
+    review_channel = SimpleNamespace(
+        get_partial_message=lambda _m: SimpleNamespace(delete=AsyncMock())
+    )
+    guild = SimpleNamespace(get_role=lambda _i: role, fetch_member=AsyncMock(return_value=target))
+
+    bot = _bot(db)
+    bot.get_guild = lambda _i: guild
+    bot.get_channel = lambda cid: {10: review_channel, 11: vydacha, 12: audit}.get(cid)
+
+    await RoleGiver.on_raw_reaction_add(RoleGiver(bot), _payload(message_id=777, emoji="☑️"))  # type: ignore[arg-type]
+
+    target.add_roles.assert_awaited_once()
+    vydacha.send.assert_not_awaited()  # ничего в #выдача
+    audit.send.assert_not_awaited()  # и ничего в #аудит
+    assert await RepoGive(db).get(777) is None  # но заявка снята — решение принято
 
 
 async def test_reaction_race_second_is_noop(db: Database) -> None:

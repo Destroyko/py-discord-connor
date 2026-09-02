@@ -29,6 +29,7 @@ from connor.core.hierarchy import (
 )
 from connor.core.msg_guard import should_process_message
 from connor.core.mute_state import MuteState
+from connor.core.resolve import EntityResolver
 from connor.core.targets import parse_target_id
 from connor.core.texts import ERR_NO_TARGET, ERR_TARGET_ABSENT, REASON_NOT_GIVEN, SELF_MODERATION
 from connor.core.timefmt import format_remaining_coarse, parse_mute_duration
@@ -109,20 +110,12 @@ class Mute(commands.Cog):
     def __init__(self, bot: ConnorBot) -> None:
         self.bot = bot
         self.state = MuteState()
-        self._molchun_missing_logged = False
+        self._resolver = EntityResolver(log)  # реконсиляция дёргается часто — лог 1 раз на id
 
     # -- helpers --------------------------------------------------------------
 
     def _molchun_role(self, guild: discord.Guild) -> discord.Role | None:
-        role_id = self.bot.config.roles["MOLCHUN"]
-        role = guild.get_role(role_id)
-        if role is None and not self._molchun_missing_logged:
-            # реконсиляция дёргается на каждом сообщении — логируем один раз
-            log.error(
-                'роль "Молчун" (ID=%d) не найдена — визуальный индикатор мьюта отключён', role_id
-            )
-            self._molchun_missing_logged = True
-        return role
+        return self._resolver.role(guild, self.bot.config.roles["MOLCHUN"], 'роль "Молчун"')
 
     def _hierarchy_ok(self, author: discord.Member, member: discord.Member, owner_id: int) -> bool:
         block = check_hierarchy(
@@ -213,7 +206,7 @@ class Mute(commands.Cog):
             await ctx.send(_ERR_ALREADY_MUTED)
             return
 
-        old_time = self.state.last_time(member.id) or _remaining_str(member) if updated else None
+        old_time = (self.state.last_time(member.id) or _remaining_str(member)) if updated else None
 
         try:
             await member.timeout(timedelta(seconds=seconds), reason=self._audit(ctx, f"мут {time}"))

@@ -21,6 +21,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from connor.core.resolve import EntityResolver
 from connor.core.targets import parse_target_id
 from connor.core.texts import ERR_NO_TARGET, REASON_NOT_GIVEN
 from connor.core.timefmt import fmt_full, fmt_full_minute
@@ -93,14 +94,15 @@ class Anti(commands.Cog):
         self.bot = bot
         self.anti_repo = RepoAnti(bot.db)
         self.pred_repo = RepoPredlozhka(bot.db)
+        self._resolver = EntityResolver(log)
 
     # -- helpers -----------------------------------------------------------------
 
     def _rabotyaga_role(self, guild: discord.Guild) -> discord.Role | None:
-        return guild.get_role(self.bot.config.roles["RABOTYAGA"])
+        return self._resolver.role(guild, self.bot.config.roles["RABOTYAGA"], 'роль "работяга"')
 
     def _predlozhka(self, guild: discord.Guild) -> discord.abc.GuildChannel | None:
-        return guild.get_channel(self.bot.config.channels["PREDLOZHKA"])
+        return self._resolver.channel(guild, self.bot.config.channels["PREDLOZHKA"], "#предложка")
 
     async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError) -> None:
         if isinstance(error, commands.MissingRequiredArgument) and error.param.name == "target":
@@ -185,6 +187,12 @@ class Anti(commands.Cog):
             return
 
         if not await self.anti_repo.contains(target_id):
+            # записи в анти-списке нет, но бот-овый deny в «предложке» мог остаться
+            # (не снялся ранее по сбою API) — на всякий случай снимаем его тут же
+            member = guild.get_member(target_id)
+            predlozhka = self._predlozhka(guild)
+            if member is not None and predlozhka is not None:
+                await clear_deny(predlozhka, member, self.pred_repo)
             await ctx.send(_ERR_NOT_IN_LIST)
             return
         await self.anti_repo.remove(target_id)
@@ -268,11 +276,9 @@ class Anti(commands.Cog):
         return None
 
     def _antirabotyagi(self, guild: discord.Guild) -> discord.abc.Messageable | None:
-        channel_id = self.bot.config.channels["ANTIRABOTYAGI"]
-        channel = guild.get_channel(channel_id)
-        if channel is None:
-            log.error("канал #антиработяги (ID=%d) не найден — лог наблюдения пропущен", channel_id)
-        return channel
+        return self._resolver.channel(
+            guild, self.bot.config.channels["ANTIRABOTYAGI"], "#антиработяги"
+        )
 
     async def _on_manual_removal(
         self, member: discord.Member, actor: discord.User | discord.Member

@@ -6,7 +6,14 @@ suspicious_words = []
 
 # Критерий «медиа»: домены GIF-провайдеров встроенного пикера Discord
 # (Tenor и любые будущие). Не хардкод одного домена.
+# Матч по хосту: точное совпадение ИЛИ поддомен (host.endswith("." + d)),
+# поэтому голого регистрируемого домена достаточно; media-хосты продублированы
+# для наглядности. klipy.co — ОТДЕЛЬНЫЙ домен от klipy.com, нужен своей строкой.
 gif_domains = [
     "tenor.com",
     "media.tenor.com",
+    "klipy.com",
+    "static.klipy.com",
+    "klipy.co",
+    "static.klipy.co",
 ]

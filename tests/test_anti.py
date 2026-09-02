@@ -178,6 +178,23 @@ async def test_del_not_in_list_plain_error(db: Database) -> None:
     ctx.send.assert_awaited_once_with(_ERR_NOT_IN_LIST)  # текст, не embed
 
 
+async def test_del_not_in_list_still_clears_stale_predlozhka_deny(db: Database) -> None:
+    # анти-статуса нет, но бот-овый deny в «предложке» когда-то остался — снять
+    await RepoPredlozhka(db).add(50, reason="анти-работяга", set_at=1)
+    member = _member(50, roles=[])
+    predlozhka = SimpleNamespace(
+        overwrites_for=lambda _m: discord.PermissionOverwrite(send_messages=False),
+        set_permissions=AsyncMock(),
+    )
+    ctx = _ctx(members={50: member}, predlozhka=predlozhka)
+
+    await _del(_cog(db), ctx, "50")
+
+    predlozhka.set_permissions.assert_awaited_once()
+    assert await RepoPredlozhka(db).contains(50) is False
+    ctx.send.assert_awaited_once_with(_ERR_NOT_IN_LIST)
+
+
 async def test_del_deleted_account_cleans_silently(db: Database) -> None:
     await RepoAnti(db).add(50, added_at=1, added_by=1)
     ctx = _ctx(members={})

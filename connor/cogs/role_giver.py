@@ -21,6 +21,7 @@ from discord import app_commands
 from discord.ext import commands
 from discord.utils import utcnow
 
+from connor.core.resolve import EntityResolver
 from connor.core.timefmt import fmt_short
 from connor.db.repo_anti import RepoAnti
 from connor.db.repo_give import RepoGive
@@ -117,19 +118,15 @@ class RoleGiver(commands.Cog):
         self.bot = bot
         self.give_repo = RepoGive(bot.db)
         self.anti_repo = RepoAnti(bot.db)
-        self._missing_logged: set[int] = set()
+        self._resolver = EntityResolver(log)
 
     # -- helpers -----------------------------------------------------------------
 
-    def _channel(self, channel_id: int) -> discord.abc.Messageable | None:
-        channel = self.bot.get_channel(channel_id)
-        if channel is None and channel_id not in self._missing_logged:
-            log.error("канал ID=%d не найден — roleGiver функция пропущена", channel_id)
-            self._missing_logged.add(channel_id)
-        return channel
+    def _channel(self, channel_id: int, label: str) -> discord.abc.Messageable | None:
+        return self._resolver.channel(self.bot, channel_id, label)
 
     def _rabotyaga(self, guild: discord.Guild) -> discord.Role | None:
-        return guild.get_role(self.bot.config.roles["RABOTYAGA"])
+        return self._resolver.role(guild, self.bot.config.roles["RABOTYAGA"], 'роль "работяга"')
 
     # -- /give -----------------------------------------------------------------------
 
@@ -153,13 +150,14 @@ class RoleGiver(commands.Cog):
         )
 
         if not reasons:  # сценарий 1
-            await self._grant(member, reason="give: чистый аккаунт")
-            await ctx.send(_GRANTED, allowed_mentions=discord.AllowedMentions.none())
+            if await self._grant(member, reason="give: чистый аккаунт"):
+                await ctx.send(_GRANTED, allowed_mentions=discord.AllowedMentions.none())
+            # выдача не удалась → тихо, ответ пользователю не шлём (лог уже на сервере)
             return
 
         # сценарий 2 — ручная проверка
         await ctx.send(_PENDING, allowed_mentions=discord.AllowedMentions.none())
-        rekvesty = self._channel(self.bot.config.channels["REKVESTY"])
+        rekvesty = self._channel(self.bot.config.channels["REKVESTY"], "#реквесты-работяг")
         if rekvesty is None:
             return
         text = build_review_message(member.mention, reasons, member.created_at, member.joined_at)
@@ -177,7 +175,7 @@ class RoleGiver(commands.Cog):
             return False
         try:
             await member.add_roles(role, reason=reason)
-        except discord.Forbidden:
+        except discord.HTTPException:
             log_action_error(log, "выдать роль работяга", target=member)
             return False
         return True
@@ -223,10 +221,12 @@ class RoleGiver(commands.Cog):
         if member is None:  # запросивший уже ушёл — молча, без ответа в #выдача
             return
 
-        if approved:
-            await self._grant(member, reason="give: одобрено вручную")
+        if approved and not await self._grant(member, reason="give: одобрено вручную"):
+            # роль физически не выдана (нет роли / отказ API) — тихо: ни в #выдача,
+            # ни в #аудит, только серверный лог (_grant уже залогировал)
+            return
 
-        vydacha = self._channel(self.bot.config.channels["VYDACHA"])
+        vydacha = self._channel(self.bot.config.channels["VYDACHA"], "#выдача-работяг")
         if vydacha is not None:
             body = "роль выдана." if approved else _REFUSAL
             await vydacha.send(
@@ -253,7 +253,7 @@ class RoleGiver(commands.Cog):
         *,
         approved: bool,
     ) -> None:
-        audit = self._channel(self.bot.config.channels["AUDIT"])
+        audit = self._channel(self.bot.config.channels["AUDIT"], "#аудит")
         if audit is None:
             return
         mod = payload.member

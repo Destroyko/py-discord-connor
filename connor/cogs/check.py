@@ -20,6 +20,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from connor.core.msg_guard import should_process_message
+from connor.core.resolve import EntityResolver
 from connor.db.repo_anti import RepoAnti
 from connor.db.repo_predlozhka import RepoPredlozhka
 from connor.predlozhka import apply_deny, clear_deny
@@ -38,15 +39,10 @@ class Check(commands.Cog):
         self.bot = bot
         self.anti_repo = RepoAnti(bot.db)
         self.pred_repo = RepoPredlozhka(bot.db)
-        self._predlozhka_missing_logged = False
+        self._resolver = EntityResolver(log)
 
     def _predlozhka(self, guild: discord.Guild) -> discord.abc.GuildChannel | None:
-        channel_id = self.bot.config.channels["PREDLOZHKA"]
-        channel = guild.get_channel(channel_id)
-        if channel is None and not self._predlozhka_missing_logged:
-            log.error("канал #предложка (ID=%d) не найден — check работает вслепую", channel_id)
-            self._predlozhka_missing_logged = True
-        return channel
+        return self._resolver.channel(guild, self.bot.config.channels["PREDLOZHKA"], "#предложка")
 
     @commands.hybrid_command(name="check", description="Проверить доступ в предложку")
     @app_commands.guild_only()

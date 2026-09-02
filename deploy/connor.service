@@ -1,0 +1,52 @@
+# systemd-юнит Connor (см. IMPLEMENTATION_PLAN.md P6.3, environment.md § "Развёртывание").
+#
+# Установка:
+#   sudo cp deploy/connor.service /etc/systemd/system/connor.service
+#   sudo $EDITOR /etc/systemd/system/connor.service   # выправить User/пути под свой VPS
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now connor
+#   journalctl -u connor -f          # смотреть лог (строки [startup] — стартовая диагностика)
+#
+# Пути ниже — конвенция /opt/connor; поменять, если развёрнуто в другом месте.
+# EnvironmentFile — тот же .env, что и при локальном запуске (19 ключей, см. .env.example).
+
+[Unit]
+Description=Connor — Discord moderation bot (single guild)
+After=network-online.target
+Wants=network-online.target
+
+# Против busy-loop: не больше 5 неудачных стартов за 300 c, иначе systemd
+# уводит юнит в failed и перестаёт дёргать (снять — `systemctl reset-failed connor`).
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=connor
+Group=connor
+WorkingDirectory=/opt/connor
+EnvironmentFile=/opt/connor/.env
+ExecStart=/opt/connor/.venv/bin/python -m connor
+
+Restart=on-failure
+RestartSec=10
+# exit 2 = невалидный конфиг (.env / config/*.toml). Рестартить бессмысленно —
+# сидим в failed, пока оператор не починит и не сделает `systemctl restart`.
+# exit 1 (сбой входа / БД / фатальный preflight) — рестартим, но под StartLimit.
+RestartPreventExitStatus=2
+
+# Файловые логи по умолчанию в /opt/connor/logs (внутри ReadWritePaths — писать
+# можно). Свой каталог — задать LOG_DIR в .env и добавить его сюда, напр.:
+#   LogsDirectory=connor            # systemd создаст /var/log/connor
+#   и LOG_DIR=/var/log/connor в .env
+# Ротация/удаление старых срезов — внутри бота (посуточно, ~месяц), logrotate не нужен.
+
+# Опциональное усиление (снять/подправить, если мешает):
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/connor
+
+[Install]
+WantedBy=multi-user.target

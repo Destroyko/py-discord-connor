@@ -21,6 +21,7 @@ from discord.ext import commands
 
 from connor.core.channels import in_roddom
 from connor.core.msg_guard import should_process_message
+from connor.core.resolve import EntityResolver
 
 if TYPE_CHECKING:
     from connor.bot import ConnorBot
@@ -81,7 +82,7 @@ def build_media_meta_embed(
 class ModerationChat(commands.Cog):
     def __init__(self, bot: ConnorBot) -> None:
         self.bot = bot
-        self._missing_logged: set[int] = set()
+        self._resolver = EntityResolver(log)
 
     @property
     def _words(self) -> tuple[str, ...]:
@@ -91,12 +92,8 @@ class ModerationChat(commands.Cog):
     def _gif_domains(self) -> tuple[str, ...]:
         return self.bot.config.moderation_chat.gif_domains
 
-    def _channel(self, channel_id: int) -> discord.abc.Messageable | None:
-        channel = self.bot.get_channel(channel_id)
-        if channel is None and channel_id not in self._missing_logged:
-            log.error("канал ID=%d не найден — пересылка moderationChat пропущена", channel_id)
-            self._missing_logged.add(channel_id)
-        return channel
+    def _channel(self, channel_id: int, label: str) -> discord.abc.Messageable | None:
+        return self._resolver.channel(self.bot, channel_id, label)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
@@ -110,7 +107,7 @@ class ModerationChat(commands.Cog):
     async def _check_words(self, message: discord.Message) -> None:
         if find_suspicious(message.content or "", self._words) is None:
             return
-        channel = self._channel(self.bot.config.channels["CHEKLIST"])
+        channel = self._channel(self.bot.config.channels["CHEKLIST"], "#чек-лист")
         if channel is None:
             return
         await channel.send(
@@ -127,7 +124,7 @@ class ModerationChat(commands.Cog):
         gif_links = extract_gif_links(message.content or "", self._gif_domains)
         if not attachment_refs and not gif_links:
             return
-        channel = self._channel(self.bot.config.channels["CHEKLIST2"])
+        channel = self._channel(self.bot.config.channels["CHEKLIST2"], "#чек-лист2")
         if channel is None:
             return
 

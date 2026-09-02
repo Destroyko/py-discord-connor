@@ -40,6 +40,11 @@ COGS: tuple[str, ...] = (
     "connor.cogs.anti",
     "connor.cogs.check",
     "connor.cogs.role_giver",
+    "connor.cogs.voices_rooms",
+    "connor.cogs.voices_selfmod",
+    "connor.cogs.voices_xp",
+    "connor.cogs.voices_ladder",
+    "connor.cogs.misc",
 )
 
 # --- таблицы для preflight (development.md § "Стартовая диагностика") --------

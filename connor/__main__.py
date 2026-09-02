@@ -11,7 +11,13 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
+from pathlib import Path
+
+#: куда писать файловые логи, если не задан ``LOG_DIR`` — каталог ``logs/`` в корне
+#: репозитория (для systemd это ``WorkingDirectory``, т.е. ``/opt/connor/logs``).
+_DEFAULT_LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
 
 
 def _force_utf8_streams() -> None:
@@ -31,10 +37,18 @@ def _force_utf8_streams() -> None:
 def main() -> int:
     _force_utf8_streams()
 
+    # .env в окружение до setup_logging, чтобы LOG_DIR можно было задать и там
+    # (не только реальной переменной окружения). Полная валидация конфига — ниже,
+    # в load_config; здесь только подтягиваем значения. Повторный load_dotenv в
+    # load_config не переопределяет уже выставленное.
+    from dotenv import load_dotenv
+
+    load_dotenv()
+
     from connor.config import ConfigError, load_config
     from connor.logging_setup import setup_logging
 
-    setup_logging()
+    setup_logging(log_dir=os.environ.get("LOG_DIR") or str(_DEFAULT_LOG_DIR))
     log = logging.getLogger("connor.startup")
 
     try:

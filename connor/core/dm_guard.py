@@ -11,7 +11,8 @@
 
 from __future__ import annotations
 
-#: Единственные ``!``-команды, разрешённые в ЛС боту (обе без slash-варианта).
+#: ``!``-команды, разрешённые в ЛС боту: ``!vdel`` (только префиксная) и
+#: ``!ban_list`` (у неё есть и slash-форма, но та guild-scoped и в ЛС недоступна).
 DM_ALLOWED_COMMANDS = frozenset({"vdel", "ban_list"})
 
 
