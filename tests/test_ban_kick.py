@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 import discord
 
 from connor.cogs.ban_kick import BanKick, build_mod_embed, hierarchy_reject
-from connor.core.texts import ERR_NO_TARGET, ERR_TARGET_ABSENT, REASON_NOT_GIVEN, SELF_MODERATION
+from connor.core.texts import ERR_NO_TARGET, REASON_NOT_GIVEN, SELF_MODERATION
 
 _NOT_FOUND = discord.NotFound(SimpleNamespace(status=404, reason="Not Found"), "not found")
 
@@ -65,8 +65,12 @@ def _ctx(*, members: dict[int, SimpleNamespace] | None = None, already_banned: b
     return SimpleNamespace(guild=guild, author=_member(1, pos=10), send=AsyncMock())
 
 
-async def _ban(ctx: SimpleNamespace, target: str, reason: str | None = None) -> None:
-    await BanKick.ban.callback(BanKick(SimpleNamespace()), ctx, target, reason=reason)  # type: ignore[arg-type]
+async def _ban(
+    ctx: SimpleNamespace, target: str, reason: str | None = None, *, account_exists: bool = True
+) -> None:
+    fetch_user = AsyncMock() if account_exists else AsyncMock(side_effect=_NOT_FOUND)
+    cog = BanKick(SimpleNamespace(fetch_user=fetch_user))  # type: ignore[arg-type]
+    await BanKick.ban.callback(cog, ctx, target, reason=reason)
 
 
 async def test_ban_no_target() -> None:
@@ -75,10 +79,18 @@ async def test_ban_no_target() -> None:
     ctx.send.assert_awaited_once_with(ERR_NO_TARGET)
 
 
-async def test_ban_target_not_on_server() -> None:
+async def test_ban_absent_account_exists_still_bans() -> None:
+    ctx = _ctx()  # get_member -> None
+    await _ban(ctx, "123456789012345678", reason="каскад", account_exists=True)
+    ctx.guild.ban.assert_awaited_once()
+    assert isinstance(ctx.send.await_args.kwargs["embed"], discord.Embed)
+
+
+async def test_ban_id_is_not_a_real_account() -> None:
     ctx = _ctx()
-    await _ban(ctx, "123456789012345678")
-    ctx.send.assert_awaited_once_with(ERR_TARGET_ABSENT)
+    await _ban(ctx, "123456789012345678", account_exists=False)
+    ctx.send.assert_awaited_once_with(ERR_NO_TARGET)
+    ctx.guild.ban.assert_not_awaited()
 
 
 async def test_ban_self() -> None:
@@ -103,13 +115,10 @@ async def test_ban_success_sends_embed_and_calls_ban() -> None:
     ctx = _ctx(members={2: _member(2, pos=1)})
     await _ban(ctx, "2", reason="п11")
     ctx.guild.ban.assert_awaited_once()
-    (kwargs,) = [c.kwargs for c in ctx.send.await_args_list]
-    assert isinstance(kwargs["embed"], discord.Embed)
-    assert kwargs["embed"].fields[0].value == "п11"
+    assert ctx.send.await_args.kwargs["embed"].fields[0].value == "п11"
 
 
 async def test_ban_success_default_reason() -> None:
     ctx = _ctx(members={2: _member(2, pos=1)})
     await _ban(ctx, "2")
-    embed = ctx.send.await_args.kwargs["embed"]
-    assert embed.fields[0].value == REASON_NOT_GIVEN
+    assert ctx.send.await_args.kwargs["embed"].fields[0].value == REASON_NOT_GIVEN

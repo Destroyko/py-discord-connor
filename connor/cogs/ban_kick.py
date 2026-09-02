@@ -24,7 +24,7 @@ from connor.core.hierarchy import (
     is_self_moderation,
 )
 from connor.core.targets import parse_target_id
-from connor.core.texts import ERR_NO_TARGET, ERR_TARGET_ABSENT, REASON_NOT_GIVEN, SELF_MODERATION
+from connor.core.texts import ERR_NO_TARGET, REASON_NOT_GIVEN, SELF_MODERATION
 from connor.logging_setup import log_action_error
 
 if TYPE_CHECKING:
@@ -39,7 +39,6 @@ _UNBAN_OK = "{mention} разбанен. Возрадуемся!"
 _ERR_REASON_REQUIRED = "Укажите причину"
 _ERR_ALREADY_BANNED = "Пользователь уже в бане"
 _ERR_NOT_BANNED = "Не нашел пользователя {mention} в списке банов"
-_ERR_ACTION_FAILED = "Не удалось выполнить: у бота недостаточно прав"
 
 
 def hierarchy_reject(verb: str) -> str:
@@ -101,19 +100,27 @@ class BanKick(commands.Cog):
         if target_id is None:
             await ctx.send(ERR_NO_TARGET)
             return
-        member = guild.get_member(target_id)
-        if member is None:
-            await ctx.send(ERR_TARGET_ABSENT)
-            return
-        if is_self_moderation(ctx.author.id, member.id):
-            await ctx.send(SELF_MODERATION)
-            return
-        if not self._hierarchy_ok(ctx, member):
-            await ctx.send(hierarchy_reject("банить"))
-            return
 
+        member = guild.get_member(target_id)
+        if member is not None:
+            # цель на сервере — обычные проверки
+            if is_self_moderation(ctx.author.id, member.id):
+                await ctx.send(SELF_MODERATION)
+                return
+            if not self._hierarchy_ok(ctx, member):
+                await ctx.send(hierarchy_reject("банить"))
+                return
+        else:
+            # цель уже покинула сервер — банить можно, если аккаунт Discord существует
+            try:
+                await self.bot.fetch_user(target_id)
+            except discord.NotFound:
+                await ctx.send(ERR_NO_TARGET)
+                return
+
+        target_obj = discord.Object(id=target_id)
         try:
-            await guild.fetch_ban(discord.Object(id=member.id))
+            await guild.fetch_ban(target_obj)
             await ctx.send(_ERR_ALREADY_BANNED)
             return
         except discord.NotFound:
@@ -122,18 +129,16 @@ class BanKick(commands.Cog):
         reason_text = reason or REASON_NOT_GIVEN
         try:
             await guild.ban(
-                member,
+                target_obj,
                 reason=f"{ctx.author} ({ctx.author.id}): {reason_text}",
                 delete_message_seconds=0,
             )
         except discord.Forbidden:
-            log_action_error(log, "забанить", invoker=ctx.author, target=member)
-            await ctx.send(_ERR_ACTION_FAILED)
+            log_action_error(log, "забанить", invoker=ctx.author, target=target_id)
             return
 
-        await ctx.send(
-            embed=self._embed_for(ctx, _BAN_OK.format(mention=member.mention), reason_text)
-        )
+        description = _BAN_OK.format(mention=f"<@{target_id}>")
+        await ctx.send(embed=self._embed_for(ctx, description, reason_text))
 
     # -- /kick -----------------------------------------------------------------
 
@@ -167,7 +172,6 @@ class BanKick(commands.Cog):
             await guild.kick(member, reason=f"{ctx.author} ({ctx.author.id}): {reason}")
         except discord.Forbidden:
             log_action_error(log, "кикнуть", invoker=ctx.author, target=member)
-            await ctx.send(_ERR_ACTION_FAILED)
             return
 
         await ctx.send(embed=self._embed_for(ctx, _KICK_OK.format(mention=member.mention), reason))
@@ -205,7 +209,6 @@ class BanKick(commands.Cog):
             )
         except discord.Forbidden:
             log_action_error(log, "разбанить", invoker=ctx.author, target=target_id)
-            await ctx.send(_ERR_ACTION_FAILED)
             return
 
         await ctx.send(embed=self._embed_for(ctx, _UNBAN_OK.format(mention=mention), reason))
