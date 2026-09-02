@@ -107,9 +107,9 @@ P5 Тесты «зелёные» целиком · P6 Разное (!kiss) + д�
   - Проверка: `unit` ✓ (`tests/test_config.py`, 10 тестов: пропуски env, не-int/0/отрицательный ID, отсутствующий toml-файл, отсутствующий ключ, неверный тип, отрицательное значение, bool-тип, аггрегация env+toml, валидность shipped-конфигов); `manual` ✓ (битый `.env` → точные сообщения).
 - [x] **P0.3 `logging_setup.py`.** `setup_logging()` — один `StreamHandler` на stderr, формат `время LEVEL логгер сообщение`, идемпотентно; `discord` придушен до WARNING. `log_action_error(logger, action, *, invoker, target, exc)` — рантайм-ошибка с контекстом (что бот пытался сделать + кто/над кем + traceback только при `exc`). `print` вычищен: список проблем конфига в `__main__` идёт через логгер. Ref: `development.md` § "Логирование".
   - Проверка: `unit` ✓ (`tests/test_logging.py`, 3: идемпотентность, контекст в сообщении, traceback только с `exc`); `manual` ✓ (битый `.env` → лог-строки ERROR, exit 2).
-- [ ] **P0.4 Слой БД.** `connor/db/`: коннект `aiosqlite` с `PRAGMA journal_mode=WAL / synchronous=NORMAL / foreign_keys=ON / busy_timeout=5000` при открытии, `ping()` = `SELECT 1`, применение `migrations/*.sql` по порядку с `schema_version`. Первая миграция `0001_init.sql` создаёт **все** таблицы (см. «Схема БД» ниже).
-  - Готово когда: на чистом файле миграции применяются, `ping()` = OK; повторный старт идемпотентен.
-  - Проверка: `unit` (применение миграций к временному файлу), `preflight` (строка `[startup][БД]`).
+- [x] **P0.4 Слой БД.** `connor/db/__init__.py` — `Database(path)` c `connect()` (PRAGMA `journal_mode=WAL / synchronous=NORMAL / foreign_keys=ON / busy_timeout=5000` → миграции), `ping()` (`SELECT 1`), `close()`, `db.conn` для репо, `db.applied_migrations` (что применилось на последнем заходе — для preflight). `connor/db/migrations.py` — `apply_migrations(conn, dir)`: `migrations/NNNN_*.sql` по порядку, `schema_version(version, applied_at)`, повтор — no-op; проверка на дубли номеров. `migrations/0001_init.sql` — 7 таблиц, все DDL `IF NOT EXISTS`, timestamp-колонки — INTEGER epoch, `voice_xp_week` c `seq AUTOINCREMENT` для тай-брейка, `voice_cycle` c `CHECK(id=1)`.
+  - Готово когда: на чистом файле миграции применяются, `ping()` OK, повторный `connect()` → `applied_migrations == []`. ✓
+  - Проверка: `unit` ✓ (`tests/test_db.py`, 5: применение+schema_version, ping, PRAGMA, идемпотентность reconnect, тай-брейк `voice_xp_week` = порядок вставки); `manual` ✓ (реальный файл, `CHECK(id=1)` ловится, WAL-сайдкары чистятся на close); `preflight` — в P1.7.
 - [ ] **P0.5 `bot.py` bootstrap.** `commands.Bot(command_prefix="!", intents=...)`: intents Guild Members + Message Content + Voice States + Guilds; `member_cache_flags=MemberCacheFlags(voice=True, joined=False)`, `chunk_guilds_at_startup=False` (`environment.md` § "Технический стек"; следствия — P1.0d); single-guild; загрузка когов; hybrid-команды guild-scoped на `GUILD_ID`; мод-команды регистрируются с `default_member_permissions = moderate_members` (см. таблицу решений — гейт выбран так, чтобы права владельца приватной комнаты `Manage Channels` не открывали мод-команды); префикс-only команды (`!purge`,`!vdel`,`!ban_list`,`!kiss`) — обычные `commands.command`, реплика Command Permissions вручную (кроме `!kiss` и `!purge` — у `!purge` собственный гейт по эффективному `Manage Messages`, см. P2.B2); все slash — guild-only (`rules.md` § "Команды в ЛС").
   - Готово когда: бот логинится, коги грузятся, slash-дерево синкается на гильдию.
   - Проверка: `manual`.
@@ -125,9 +125,11 @@ P5 Тесты «зелёные» целиком · P6 Разное (!kiss) + д�
 | `predlozhka_overwrites` | `user_id PK`, `reason`, `set_at` — только те, что поставил **бот** | check |
 | `voice_rooms` | `owner_id PK`, `channel_id`, `created_at` | Voices (реестр) |
 | `voice_banlist` | `owner_id`, `banned_id`, `ts`, PK(`owner_id`,`banned_id`); ≤100 на владельца | Voices |
-| `voice_xp_week` | `user_id PK`, `points`. Порядок для ничьих = неявный `rowid` (порядок вставки = первое начисление в неделе): `ORDER BY points DESC, rowid ASC`. Отдельная колонка не нужна. | Voices |
-| `voice_cycle` | одна строка: `anchor_ts`, `current_dusha_id NULLABLE` | Voices |
-| `mute_reservation` | `target_id PK`, `mod_id`, `first_applied_at` — можно и в памяти (переживать рестарт не обязано) | mute |
+| `voice_xp_week` | `seq INTEGER PK AUTOINCREMENT`, `user_id UNIQUE`, `points`. Тай-брейк ничьих = `ORDER BY points DESC, seq ASC` (seq = порядок первого начисления в неделе). Явный `seq`, т.к. при `user_id INTEGER PK` он стал бы алиасом rowid и порядок вставки бы потерялся. | Voices |
+| `voice_cycle` | ровно одна строка (`id INTEGER PK CHECK(id=1)`): `anchor_ts`, `current_dusha_id NULLABLE` | Voices |
+| `mute_reservation` | **в памяти** (dict в коге mute, P2.D4) — переживать рестарт не обязано, таблицы нет | mute |
+
+Все timestamp-колонки (`added_at`, `created_at`, `ts`, `set_at`, `anchor_ts`) — `INTEGER` Unix-epoch (UTC); форматирование в MSK — при выводе (P1.4).
 
 ---
 
@@ -349,7 +351,7 @@ Ref: `development.md` § "Тестирование" — тесты обязан�
 
 | Фаза | Пунктов | Готово |
 |---|---|---|
-| P0 Фундамент | 6 | 3 (P0.1–0.3) |
+| P0 Фундамент | 6 | 4 (P0.1–0.4) |
 | P1 Ядро (P1.0 сквозное + P1.1–1.7) | 7+7 | 0 |
 | P2 Независимые (A/B/C/D) | 5+4+3+6 | 0 |
 | P3 Кластер «работяга» | 3+2+3+6 | 0 |
