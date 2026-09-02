@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from connor.db import Database
 
 _EXPECTED_TABLES = {
@@ -23,16 +21,6 @@ _EXPECTED_TABLES = {
 async def _table_names(db: Database) -> set[str]:
     async with db.conn.execute("SELECT name FROM sqlite_master WHERE type='table'") as cur:
         return {row[0] for row in await cur.fetchall()}
-
-
-@pytest.fixture
-async def db(tmp_path: Path):
-    database = Database(str(tmp_path / "test.sqlite3"))
-    await database.connect()
-    try:
-        yield database
-    finally:
-        await database.close()
 
 
 async def test_migrations_apply_on_fresh_file(db: Database) -> None:
