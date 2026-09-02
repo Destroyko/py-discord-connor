@@ -1,0 +1,19 @@
+# Конфиг модуля Voices (см. py-discord-connor.wiki/components/Voices.md).
+# Заполняется в P4.
+
+# Очки за тик начисления опыта.
+points_mic_muted = 8        # мут микрофона (self или server), без deafen
+points_active = 10          # без мута микрофона
+points_stream_bonus = 5     # стрим экрана / вебка, разово за тик
+
+tick_interval_seconds = 60
+week_seconds = 604800       # период сброса/перевыдачи роли «Душа компании»
+
+banlist_limit = 100         # максимум записей персонального бан-листа на владельца
+banlist_active_window_hours = 24  # окно «активной» записи для проактивного переноса overwrite
+
+# Стандартные параметры создаваемого приватного войса.
+room_bitrate = 64000
+room_user_limit = 0
+room_slowmode = 0
+room_nsfw = false

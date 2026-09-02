@@ -1,0 +1,12 @@
+# Конфиг модуля moderationChat (см. py-discord-connor.wiki/components/moderationChat.md).
+# Заполняется в P2.A. Оба списка меняются только ручной правкой + рестарт.
+
+# Критерий «слова»: plain-список подстрок, сравнение без учёта регистра, без границ слова.
+suspicious_words = []
+
+# Критерий «медиа»: домены GIF-провайдеров встроенного пикера Discord
+# (Tenor и любые будущие). Не хардкод одного домена.
+gif_domains = [
+    "tenor.com",
+    "media.tenor.com",
+]

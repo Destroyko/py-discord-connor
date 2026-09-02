@@ -1,0 +1,6 @@
+# Прод — Linux; держим LF в репозитории для всех текстовых файлов,
+# независимо от того, что чекаутит Windows-машина оператора.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.sqlite3 binary
