@@ -110,9 +110,10 @@ P5 Тесты «зелёные» целиком · P6 Разное (!kiss) + д�
 - [x] **P0.4 Слой БД.** `connor/db/__init__.py` — `Database(path)` c `connect()` (PRAGMA `journal_mode=WAL / synchronous=NORMAL / foreign_keys=ON / busy_timeout=5000` → миграции), `ping()` (`SELECT 1`), `close()`, `db.conn` для репо, `db.applied_migrations` (что применилось на последнем заходе — для preflight). `connor/db/migrations.py` — `apply_migrations(conn, dir)`: `migrations/NNNN_*.sql` по порядку, `schema_version(version, applied_at)`, повтор — no-op; проверка на дубли номеров. `migrations/0001_init.sql` — 7 таблиц, все DDL `IF NOT EXISTS`, timestamp-колонки — INTEGER epoch, `voice_xp_week` c `seq AUTOINCREMENT` для тай-брейка, `voice_cycle` c `CHECK(id=1)`.
   - Готово когда: на чистом файле миграции применяются, `ping()` OK, повторный `connect()` → `applied_migrations == []`. ✓
   - Проверка: `unit` ✓ (`tests/test_db.py`, 5: применение+schema_version, ping, PRAGMA, идемпотентность reconnect, тай-брейк `voice_xp_week` = порядок вставки); `manual` ✓ (реальный файл, `CHECK(id=1)` ловится, WAL-сайдкары чистятся на close); `preflight` — в P1.7.
-- [ ] **P0.5 `bot.py` bootstrap.** `commands.Bot(command_prefix="!", intents=...)`: intents Guild Members + Message Content + Voice States + Guilds; `member_cache_flags=MemberCacheFlags(voice=True, joined=False)`, `chunk_guilds_at_startup=False` (`environment.md` § "Технический стек"; следствия — P1.0d); single-guild; загрузка когов; hybrid-команды guild-scoped на `GUILD_ID`; мод-команды регистрируются с `default_member_permissions = moderate_members` (см. таблицу решений — гейт выбран так, чтобы права владельца приватной комнаты `Manage Channels` не открывали мод-команды); префикс-only команды (`!purge`,`!vdel`,`!ban_list`,`!kiss`) — обычные `commands.command`, реплика Command Permissions вручную (кроме `!kiss` и `!purge` — у `!purge` собственный гейт по эффективному `Manage Messages`, см. P2.B2); все slash — guild-only (`rules.md` § "Команды в ЛС").
-  - Готово когда: бот логинится, коги грузятся, slash-дерево синкается на гильдию.
-  - Проверка: `manual`.
+- [x] **P0.5 `bot.py` bootstrap.** `ConnorBot(commands.Bot)`: `command_prefix="!"`, intents default + Guild Members + Message Content + Voice States; `member_cache_flags=MemberCacheFlags(voice=True, joined=False)`, `chunk_guilds_at_startup=False` (следствия — P1.0d); `help_command=None`; `allowed_mentions=AllowedMentions.none()` по умолчанию (пингующие места — override явно). `setup_hook`: грузит коги из `COGS` (пусто на P0.5, модули добавляют себя в своих фазах), `tree.copy_global_to(guild)` + `tree.sync(guild=GUILD_ID)` (guild-scoped, мгновенный синк). `on_ready`: identity + проверка, что бот в гильдии из `.env` (полный preflight — P1.7). Мод-команды при регистрации получат `default_member_permissions=moderate_members`, префикс-only (`!purge`/`!vdel`/`!ban_list`/`!kiss`) — обычные `commands.command` с ручной репликой Command Permissions (кроме `!kiss` и `!purge`) — это в фазах модулей. `run_bot`: `LoginFailure`→«неверный BOT_TOKEN», `PrivilegedIntentsRequired`→сообщение про Developer Portal, прочее→`log.exception`; всё → exit 1, чистый выход → 0.
+  - Готово когда: `run_bot` маппит ошибки входа на код выхода; фейк-токен → `LoginFailure` → exit 1. ✓
+  - Проверка: `unit` ✓ (`tests/test_bot.py`, 7: intents, частичный кэш, безопасные дефолты, маппинг LoginFailure/PrivilegedIntents/прочего/чистого выхода); `manual` ✓ (фейк-токен → «неверный BOT_TOKEN», exit 1). **Ждёт ручного теста с реальным токеном:** `setup_hook` (синк дерева) и `on_ready` (проверка гильдии) — после P1.7 / первого кога.
+  - Примечание: discord.py на старте пишет 2 WARNING «PyNaCl/davey … voice will NOT be supported» — это про передачу аудио самим ботом; Connor в войс не заходит (только читает войс-стейты, создаёт/двигает каналы), PyNaCl не нужен, предупреждения безвредны.
 - [ ] **P0.6 `.env.example` + README-заметка** про то, что Command Permissions и позиция роли бота настраиваются в Discord вручную (`rules.md` § "Роли и права").
   - Проверка: `review`.
 
@@ -351,7 +352,7 @@ Ref: `development.md` § "Тестирование" — тесты обязан�
 
 | Фаза | Пунктов | Готово |
 |---|---|---|
-| P0 Фундамент | 6 | 4 (P0.1–0.4) |
+| P0 Фундамент | 6 | 5 (P0.1–0.5) |
 | P1 Ядро (P1.0 сквозное + P1.1–1.7) | 7+7 | 0 |
 | P2 Независимые (A/B/C/D) | 5+4+3+6 | 0 |
 | P3 Кластер «работяга» | 3+2+3+6 | 0 |
