@@ -148,8 +148,8 @@ P5 Тесты «зелёные» целиком · P6 Разное (!kiss) + д�
   - Проверка: `review`, `manual`.
 - [ ] **P1.0e `on_voice_state_update` — быстрый ранний выход.** Событие частое на большом сервере: хендлер сперва дёшево отсекает всё, что не про канал-триггер и не про отслеживаемые комнаты из реестра; REST — только для релевантных случаев.
   - Проверка: `review`.
-- [ ] **P1.0f `on_ready` идемпотентен.** Может сработать несколько раз (реконнекты): preflight и синк команд — по флагу «уже сделано» либо безвредны при повторе.
-  - Проверка: `unit`/`review`.
+- [x] **P1.0f `on_ready` идемпотентен.** Флаг `_preflight_done` — preflight и `_ready_at` ставятся один раз; синк команд/загрузка когов/Command Permissions — в `setup_hook` (по определению один раз до первого коннекта). Сделано в P1.7b.
+  - Проверка: `review` ✓.
 - [ ] **P1.0g Отсутствующие «мягкие» сущности — не падение.** `guild.afk_channel is None`, «категория роддом не резолвится» и т.п. в отборе каналов XP-тика трактуются как «нет такого исключения», а не ошибка.
   - Проверка: `unit`.
 
@@ -168,9 +168,10 @@ P5 Тесты «зелёные» целиком · P6 Разное (!kiss) + д�
   - Проверка: `unit` ✓ (`tests/test_permissions.py`, 21: разбор+типы+app_default, весь приоритет, кэш — fail-closed/load/lookup-by-name/apply_update add-clear-app-level/before-load-noop/invalidate); `manual` — канальные оверрайды на живом боте (после токена).
 - [ ] **P1.6 `core/dm_guard.py`.** В ЛС боту: slash — Discord сам не пускает (guild-only регистрация); `!`-команды — бот проверяет `message.guild is None` и молча игнорит всё, кроме `!vdel` и `!ban_list`. Ref: `rules.md` § "Команды в ЛС".
   - Проверка: `unit` (роутинг), `manual`.
-- [ ] **P1.7 `core/preflight.py` + ког `healthcheck`.** Единая `run_preflight_checks(guild) -> list[CheckResult]`, зовётся из `on_ready` и из `/healthcheck` (ephemeral, только slash). Проверки: гильдия по ID; intents; БД `SELECT 1`; Command Permissions API (живой REST); управляемые роли (резолв + позиция бота выше); guild-level права (таблица `development.md`); **все** каналы/категории из `.env` резолвятся (в т.ч. `CH_TRIGGER_VOICE`, `CAT_PRIVATE_VOICE`, `CAT_RODDOM`) + канальные права по таблице `development.md`; `guild.afk_channel` — не ошибка, если `None`, просто отметить в отчёте. Формат строк `[startup][<раздел>] …: OK|ОШИБКА — <конкретная причина>`; финальная строка ИТОГ. Базовые провалы (гильдия/intents/БД) → выход с ненулевым кодом; провал управляемой роли/права → модуль отключается, бот живёт. `/healthcheck` добавляет `Аптайм: …` (от `on_ready`, не персистентно). Ref: `development.md` § "Стартовая диагностика".
-  - Готово когда: на стенде с намеренно испорченным правом строка показывает точную причину; `/healthcheck` даёт тот же отчёт.
-  - Проверка: `unit` (сборка отчёта на моках guild), `manual`.
+- [x] **P1.7 `core/preflight.py` + ког `healthcheck`.**
+  - **P1.7a (чистое):** `CheckResult(section,label,ok,detail,fatal)` c `.line` (`[startup][<раздел>] <label>: OK|ОШИБКА — <деталь>`); `any_fatal`, `summary_line` (`[startup] ИТОГ: …`), `format_uptime` (`4д 3ч 12м`); отдельные проверки `check_guild`/`check_intents`/`check_db` (fatal), `check_managed_role` (резолв + позиция бота строго выше, `None` = не найдена), `check_guild_permissions`, `check_channel` (не найден / не хватает прав), `check_command_permissions_api` (не fatal — fail closed). Всё на примитивах.
+  - **P1.7b (оркестратор + подключение):** `ConnorBot.run_preflight()` собирает входы и зовёт `check_*`: гильдия по ID, intents (`self.intents`), БД `ping()`, 3 управляемые роли (позиция vs `guild.me.top_role`), guild-level права (9 из таблицы `development.md`), 11 каналов + 2 категории из `.env` (резолв + `permissions_for(guild.me)` по таблице), AFK-канал (инфо, `None` — не ошибка), Command Permissions API (живой `get_guild_application_command_permissions`). `on_ready` — один раз (флаг, P1.0f), логирует построчно (OK→INFO, warn→WARNING, fatal→ERROR) + ИТОГ; при `any_fatal` → `_exit_code=1` + `close()`; `run_bot` возвращает `_exit_code`. БД подключается в `setup_hook` (ошибка миграций = бот не поднялся, exit 1), закрывается в `close()`. Ког `cogs/healthcheck.py` — slash-only, ephemeral, `default_permissions(moderate_members=True)`, зовёт `bot.run_preflight()` + `Аптайм: …` (от `on_ready`, не персистентно).
+  - Проверка: `unit` ✓ (`tests/test_preflight.py`, 11: формат строки, каждая `check_*`, `any_fatal`/`summary_line`/`format_uptime`); `manual` ✓ (offline-прогон `run_preflight` без коннекта → гильдия ОШИБКА fatal, intents OK, БД OK, ИТОГ «бот НЕ поднят», `any_fatal=True`); **ждёт токена:** роль/право/канал-проверки на живой гильдии + `/healthcheck` в Discord.
 
 ---
 
@@ -355,7 +356,7 @@ Ref: `development.md` § "Тестирование" — тесты обязан�
 | Фаза | Пунктов | Готово |
 |---|---|---|
 | P0 Фундамент | 6 | 6 ✅ |
-| P1 Ядро (P1.0 сквозное + P1.1–1.7) | 7+7 | 5 (P1.1–1.5) |
+| P1 Ядро (P1.0 сквозное + P1.1–1.7) | 7+7 | 8 (P1.0f, P1.1–1.5, P1.7) |
 | P2 Независимые (A/B/C/D) | 5+4+3+6 | 0 |
 | P3 Кластер «работяга» | 3+2+3+6 | 0 |
 | P4 Voices | 3+2+4+2+4+1 | 0 |

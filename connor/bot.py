@@ -1,4 +1,4 @@
-"""Bootstrap бота (см. IMPLEMENTATION_PLAN.md P0.5).
+"""Bootstrap бота (см. IMPLEMENTATION_PLAN.md P0.5, P1.7).
 
 ``ConnorBot`` — ``commands.Bot`` под один сервер:
 
@@ -8,28 +8,96 @@
 - ``allowed_mentions`` по умолчанию — ничего не пингуем; места, где пинг нужен
   (перевыдача «Души компании», ``@here`` в roleGiver), передают override явно;
 - все команды регистрируются guild-scoped на ``GUILD_ID`` (мгновенный синк);
-- коги грузятся в ``setup_hook`` из списка ``COGS`` (пополняется по мере готовности
-  модулей, P2+).
-
-Полная стартовая диагностика (preflight) подключается в ``on_ready`` в P1.7 —
-сейчас здесь только проверка «бот в нужной гильдии».
+- коги грузятся в ``setup_hook`` из списка ``COGS``;
+- ``setup_hook`` подключает БД (прогон миграций) и грузит Command Permissions;
+- ``on_ready`` один раз прогоняет ``run_preflight``; при фатальном провале
+  (гильдия / intents / БД) бот останавливается с кодом выхода 1.
 """
 
 from __future__ import annotations
 
 import logging
+import time
 
 import discord
 from discord.ext import commands
 
 from connor.config import Config
+from connor.core import preflight
 from connor.core.permissions import CommandPermissionsCache
+from connor.db import Database
 
 log = logging.getLogger(__name__)
 
-#: Пути когов для ``load_extension``. Пусто на P0.5 — каждый модуль добавляет себя
-#: в своей фазе (P2: cogs.moderation_chat / cogs.purge / cogs.ban_kick / cogs.mute; и т.д.).
-COGS: tuple[str, ...] = ()
+#: Пути когов для ``load_extension``. Каждый модуль добавляет себя в своей фазе.
+COGS: tuple[str, ...] = ("connor.cogs.healthcheck",)
+
+# --- таблицы для preflight (development.md § "Стартовая диагностика") --------
+
+_GUILD_PERMS: tuple[tuple[str, str], ...] = (
+    ("ban_members", "Ban Members"),
+    ("kick_members", "Kick Members"),
+    ("moderate_members", "Moderate Members"),
+    ("manage_roles", "Manage Roles"),
+    ("manage_channels", "Manage Channels"),
+    ("manage_messages", "Manage Messages"),
+    ("view_audit_log", "View Audit Log"),
+    ("move_members", "Move Members"),
+    ("manage_guild", "Manage Server"),
+)
+
+_VSE = (
+    ("view_channel", "View"),
+    ("send_messages", "Send Messages"),
+    ("embed_links", "Embed Links"),
+)
+_VS = (("view_channel", "View"), ("send_messages", "Send Messages"))
+
+#: config.channels-ключ → (метка, нужные права)
+_CHANNEL_PERMS: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
+    (
+        "REKVESTY",
+        "#реквесты-работяг",
+        (*_VS, ("add_reactions", "Add Reactions"), ("mention_everyone", "Mention Everyone")),
+    ),
+    ("BOT_KOMANDY", "#бот-команды", _VSE),
+    ("ANTIRABOTYAGI", "#антиработяги", _VSE),
+    ("AUDIT", "#аудит", _VSE),
+    ("VYDACHA", "#выдача-работяг", (*_VS, ("bypass_slowmode", "Bypass Slowmode"))),
+    ("BANY", "#баны", _VSE),
+    ("CHEKLIST", "#чек-лист", _VSE),
+    ("CHEKLIST2", "#чек-лист2", _VSE),
+    ("FLUDISLAVL", "#флудиславль", _VSE),
+    (
+        "PREDLOZHKA",
+        "#предложка",
+        (*_VS, ("manage_messages", "Manage Messages"), ("manage_channels", "Manage Channels")),
+    ),
+    (
+        "TRIGGER_VOICE",
+        "войс-триггер «создать свою комнату»",
+        (("view_channel", "View"), ("move_members", "Move Members")),
+    ),
+)
+#: config.categories-ключ → (метка, нужные права)
+_CATEGORY_PERMS: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
+    ("RODDOM", "категория «роддом»", (("view_channel", "View"),)),
+    (
+        "PRIVATE_VOICE",
+        "категория приватных войсов",
+        (
+            ("view_channel", "View"),
+            ("manage_channels", "Manage Channels"),
+            ("move_members", "Move Members"),
+        ),
+    ),
+)
+
+_MANAGED_ROLES: tuple[tuple[str, str], ...] = (
+    ("RABOTYAGA", "работяга"),
+    ("MOLCHUN", "Молчун"),
+    ("DUSHA", "Душа компании"),
+)
 
 
 class ConnorBot(commands.Bot):
@@ -50,10 +118,17 @@ class ConnorBot(commands.Bot):
             allowed_mentions=discord.AllowedMentions.none(),
         )
         self._guild = discord.Object(id=config.guild_id)
+        self.db = Database(config.db_path)
         #: реплика Command Permissions для !-пути (создаётся в setup_hook)
         self.command_perms: CommandPermissionsCache | None = None
 
+        self._preflight_done = False
+        self._ready_at: float | None = None
+        self._exit_code = 0
+
     async def setup_hook(self) -> None:
+        await self.db.connect()  # прогон миграций; ошибка здесь = бот не поднялся (exit 1)
+
         for ext in COGS:
             await self.load_extension(ext)
             log.info("ког загружен: %s", ext)
@@ -82,6 +157,10 @@ class ConnorBot(commands.Bot):
                 exc,
             )
 
+    async def close(self) -> None:
+        await self.db.close()
+        await super().close()
+
     async def on_raw_app_command_permissions_update(
         self, payload: discord.RawAppCommandPermissionsUpdateEvent
     ) -> None:
@@ -100,14 +179,116 @@ class ConnorBot(commands.Bot):
     async def on_ready(self) -> None:
         if self.user is not None:
             log.info("вошёл как %s (%d)", self.user, self.user.id)
-        guild = self.get_guild(self.config.guild_id)
-        if guild is None:
-            log.error(
-                "бот не состоит в гильдии из .env (GUILD_ID=%d) — полная диагностика в P1.7",
-                self.config.guild_id,
+        if self._preflight_done:  # on_ready может прийти повторно (реконнекты) — P1.0f
+            return
+        self._preflight_done = True
+        self._ready_at = time.monotonic()
+
+        results = await self.run_preflight()
+        for r in results:
+            level = log.info if r.ok else (log.error if r.fatal else log.warning)
+            level("%s", r.line)
+        log.info("%s", preflight.summary_line(results))
+
+        if preflight.any_fatal(results):
+            log.error("критические проверки провалены — бот останавливается")
+            self._exit_code = 1
+            await self.close()
+
+    async def run_preflight(self) -> list[preflight.CheckResult]:
+        """Единый прогон стартовой диагностики (``on_ready`` и ``/healthcheck``)."""
+        results: list[preflight.CheckResult] = []
+        gid = self.config.guild_id
+        guild = self.get_guild(gid)
+
+        results.append(
+            preflight.check_guild(
+                connected_guild_id=guild.id if guild else None, expected_guild_id=gid
             )
-        else:
-            log.info("гильдия: %s (%d)", guild.name, guild.id)
+        )
+        results.append(
+            preflight.check_intents(
+                members=self.intents.members, message_content=self.intents.message_content
+            )
+        )
+        results.append(await self._check_db())
+
+        if guild is None:
+            return results  # без гильдии остальное не проверить
+
+        me = guild.me
+        bot_top = me.top_role.position
+
+        for key, label in _MANAGED_ROLES:
+            rid = self.config.roles[key]
+            role = guild.get_role(rid)
+            results.append(
+                preflight.check_managed_role(
+                    role_id=rid,
+                    label=label,
+                    role_position=role.position if role else None,
+                    bot_top_position=bot_top,
+                )
+            )
+
+        gp = me.guild_permissions
+        results.append(
+            preflight.check_guild_permissions(
+                missing=[lbl for attr, lbl in _GUILD_PERMS if not getattr(gp, attr)]
+            )
+        )
+
+        for key, label, needed in _CHANNEL_PERMS:
+            results.append(self._check_channel(guild, self.config.channels[key], label, needed))
+        for key, label, needed in _CATEGORY_PERMS:
+            results.append(self._check_channel(guild, self.config.categories[key], label, needed))
+
+        afk = guild.afk_channel
+        results.append(
+            preflight.CheckResult(
+                "войс",
+                "AFK-канал",
+                ok=True,
+                detail=f"{afk.name} ({afk.id})" if afk else "в гильдии не задан",
+            )
+        )
+
+        results.append(await self._check_command_permissions_api(gid))
+        return results
+
+    async def _check_db(self) -> preflight.CheckResult:
+        try:
+            await self.db.ping()
+        except Exception as exc:  # любой сбой БД = фатально, деталь пишем в отчёт
+            return preflight.check_db(ping_ok=False, error=str(exc))
+        return preflight.check_db(ping_ok=True)
+
+    def _check_channel(
+        self,
+        guild: discord.Guild,
+        channel_id: int,
+        label: str,
+        needed: tuple[tuple[str, str], ...],
+    ) -> preflight.CheckResult:
+        channel = guild.get_channel(channel_id)
+        if channel is None:
+            return preflight.check_channel(
+                channel_id=channel_id, label=label, exists=False, missing_perms=[]
+            )
+        perms = channel.permissions_for(guild.me)
+        return preflight.check_channel(
+            channel_id=channel_id,
+            label=label,
+            exists=True,
+            missing_perms=[lbl for attr, lbl in needed if not getattr(perms, attr)],
+        )
+
+    async def _check_command_permissions_api(self, guild_id: int) -> preflight.CheckResult:
+        try:
+            await self.http.get_guild_application_command_permissions(self.application_id, guild_id)
+        except discord.HTTPException as exc:
+            return preflight.check_command_permissions_api(reachable=False, error=str(exc))
+        return preflight.check_command_permissions_api(reachable=True)
 
 
 def run_bot(config: Config) -> int:
@@ -128,4 +309,4 @@ def run_bot(config: Config) -> int:
     except Exception:
         log.exception("бот остановлен из-за необработанной ошибки")
         return 1
-    return 0
+    return bot._exit_code

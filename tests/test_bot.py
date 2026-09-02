@@ -11,6 +11,7 @@ from connor.bot import ConnorBot, run_bot
 class _FakeConfig:
     guild_id = 123456789012345678
     bot_token = "fake-token"
+    db_path = ":memory:"
 
 
 @pytest.fixture
