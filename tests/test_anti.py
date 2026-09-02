@@ -9,6 +9,7 @@ import discord
 
 from connor.cogs.anti import (
     _ERR_ALREADY,
+    _ERR_NOT_IN_LIST,
     _ROLE_REMOVE_FAILED,
     _ROLE_RETURNED,
     Anti,
@@ -27,6 +28,7 @@ from connor.db.repo_predlozhka import RepoPredlozhka
 def test_build_add_embed() -> None:
     e = build_add_embed("<@5>", "п11", 1_755_366_570)
     assert e.description == "Пользователь <@5> добавлен в список антиработяг"
+    assert e.colour == discord.Color.red()
     assert [f.name for f in e.fields] == ["Причина", "Дата добавления"]
     assert e.fields[0].value == "п11"
     assert e.footer.text.startswith("Claptrap желает вам приятного дня • ")
@@ -35,6 +37,7 @@ def test_build_add_embed() -> None:
 def test_build_del_embed_has_no_date_field() -> None:
     e = build_del_embed("<@5>", "отсидел")
     assert e.description == "Пользователь <@5> удалён из списка антиработяг"
+    assert e.colour == discord.Color.green()
     assert [f.name for f in e.fields] == ["Причина"]
     assert e.footer.text.startswith("Claptrap желает вам приятного дня • ")
 
@@ -44,6 +47,7 @@ def test_build_role_removed_embed() -> None:
     assert "**изъяли роль**" in e.description
     assert "Работяга" in e.description
     assert "!add id/квот причина" in e.description
+    assert e.colour == discord.Color.red()
     assert e.author.name is None  # без модератора
 
     m = SimpleNamespace(display_name="enteii", display_avatar=SimpleNamespace(url="http://a"))
@@ -166,6 +170,12 @@ async def test_del_removes_and_returns_role(db: Database) -> None:
     assert await RepoAnti(db).contains(50) is False
     member.add_roles.assert_awaited_once()
     assert ctx.send.await_args_list[-1].args == (_ROLE_RETURNED,)
+
+
+async def test_del_not_in_list_plain_error(db: Database) -> None:
+    ctx = _ctx(members={})
+    await _del(_cog(db), ctx, "50")
+    ctx.send.assert_awaited_once_with(_ERR_NOT_IN_LIST)  # текст, не embed
 
 
 async def test_del_deleted_account_cleans_silently(db: Database) -> None:

@@ -35,12 +35,16 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _ERR_ALREADY = "Пользователь {mention} уже существует в списке антиработяг"
+_ERR_NOT_IN_LIST = "Пользователь не в списке антиработяг"
 _ROLE_REMOVE_FAILED = "Я не смог изъять роль так как пользователь не найден или не имеет такой роли"
 _ROLE_RETURNED = "Роль возвращена"
 _FOOTER = "Claptrap желает вам приятного дня"
 
-#: журнал аудита появляется в API не сразу после события (см. anti.md)
-_AUDIT_DELAY_SECONDS = 5
+# журнал аудита появляется в API не сразу после события (~4–5 c, см. anti.md);
+# смотрим быстро, потом ретраим ~30 c
+_AUDIT_FIRST_DELAY = 1
+_AUDIT_RETRY_INTERVAL = 5
+_AUDIT_ATTEMPTS = 7  # 1 c + 6×5 c ≈ 31 c
 _MANUAL_GRANT_REASON = "роль «работяга» выдана вручную"
 
 _ROLE_REMOVED_DESC = (
@@ -53,7 +57,10 @@ _ROLE_REMOVED_DESC = (
 
 
 def build_add_embed(mention: str, reason: str, added_at: int) -> discord.Embed:
-    embed = discord.Embed(description=f"Пользователь {mention} добавлен в список антиработяг")
+    embed = discord.Embed(
+        description=f"Пользователь {mention} добавлен в список антиработяг",
+        colour=discord.Color.red(),
+    )
     embed.add_field(name="Причина", value=reason, inline=False)
     embed.add_field(name="Дата добавления", value=fmt_full(added_at), inline=False)
     embed.set_footer(text=f"{_FOOTER} • {fmt_full_minute(added_at)}")
@@ -61,7 +68,10 @@ def build_add_embed(mention: str, reason: str, added_at: int) -> discord.Embed:
 
 
 def build_del_embed(mention: str, reason: str) -> discord.Embed:
-    embed = discord.Embed(description=f"Пользователь {mention} удалён из списка антиработяг")
+    embed = discord.Embed(
+        description=f"Пользователь {mention} удалён из списка антиработяг",
+        colour=discord.Color.green(),
+    )
     embed.add_field(name="Причина", value=reason, inline=False)
     embed.set_footer(text=f"{_FOOTER} • {fmt_full_minute(int(time()))}")
     return embed
@@ -70,7 +80,9 @@ def build_del_embed(mention: str, reason: str) -> discord.Embed:
 def build_role_removed_embed(
     mention: str, *, moderator: discord.abc.User | discord.Member | None = None
 ) -> discord.Embed:
-    embed = discord.Embed(description=_ROLE_REMOVED_DESC.format(mention=mention))
+    embed = discord.Embed(
+        description=_ROLE_REMOVED_DESC.format(mention=mention), colour=discord.Color.red()
+    )
     if moderator is not None:
         embed.set_author(name=moderator.display_name, icon_url=moderator.display_avatar.url)
     return embed
@@ -172,7 +184,10 @@ class Anti(commands.Cog):
             await ctx.send(ERR_NO_TARGET)
             return
 
-        await self.anti_repo.remove(target_id)  # no-op, если записи не было
+        if not await self.anti_repo.contains(target_id):
+            await ctx.send(_ERR_NOT_IN_LIST)
+            return
+        await self.anti_repo.remove(target_id)
         reason_text = reason or REASON_NOT_GIVEN
         member = guild.get_member(target_id)
         mention = f"<@{target_id}>"
@@ -207,8 +222,7 @@ class Anti(commands.Cog):
 
         granted = has
         try:
-            await asyncio.sleep(_AUDIT_DELAY_SECONDS)
-            actor = await self._audit_actor(after.guild, after.id, granted=granted)
+            actor = await self._await_audit_actor(after.guild, after.id, granted=granted)
             if actor is None:
                 log.warning(
                     "не нашёл в журнале аудита, кто %s роль «работяга» у %s (%d)",
@@ -225,6 +239,19 @@ class Anti(commands.Cog):
                 await self._on_manual_removal(after, actor)
         except Exception:
             log.exception("watcher роли «работяга»: сбой обработки для %s (%d)", after, after.id)
+
+    async def _await_audit_actor(
+        self, guild: discord.Guild, target_id: int, *, granted: bool
+    ) -> discord.User | discord.Member | None:
+        """Смотрим журнал аудита быстро, потом ретраим (~1 c + 5 c × ≈30 c)."""
+        await asyncio.sleep(_AUDIT_FIRST_DELAY)
+        for attempt in range(_AUDIT_ATTEMPTS):
+            actor = await self._audit_actor(guild, target_id, granted=granted)
+            if actor is not None:
+                return actor
+            if attempt < _AUDIT_ATTEMPTS - 1:
+                await asyncio.sleep(_AUDIT_RETRY_INTERVAL)
+        return None
 
     async def _audit_actor(
         self, guild: discord.Guild, target_id: int, *, granted: bool
