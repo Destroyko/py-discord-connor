@@ -128,6 +128,7 @@ class ConnorBot(commands.Bot):
         self._exit_code = 0
 
         self.add_check(_dm_guard_check)
+        self.add_check(_command_perms_check)
 
     async def on_command_error(
         self, context: commands.Context, exception: commands.CommandError
@@ -319,6 +320,51 @@ async def _dm_guard_check(context: commands.Context) -> bool:
     if context.guild is not None:
         return True
     return bool(context.command) and is_allowed_in_dm(context.command.name)
+
+
+def meets_default_permissions(
+    default_perms: discord.Permissions | None, member_perms: discord.Permissions
+) -> bool:
+    """Удовлетворяет ли участник ``default_member_permissions`` команды в этом канале.
+
+    ``None`` (у команды нет ограничения) → да; Administrator → да; иначе член должен
+    иметь все биты ``default_perms``.
+    """
+    if default_perms is None:
+        return True
+    if member_perms.administrator:
+        return True
+    return member_perms.is_superset(default_perms)
+
+
+async def _command_perms_check(context: commands.Context) -> bool:
+    """Реплика Discord Command Permissions на префиксный путь (``rules.md`` § "Роли и права").
+
+    Slash Discord фильтрует сам; в ЛС этот слой не действует (там — ``_dm_guard_check``).
+    Для префикс-only команд (``!purge``/``!kiss``/…) — свой гейт в коге, здесь пропуск.
+    Пока кэш не прогружен — fail closed.
+    """
+    if context.interaction is not None or context.guild is None or context.command is None:
+        return True
+
+    bot = context.bot
+    if not isinstance(bot, ConnorBot) or bot.command_perms is None:
+        return False  # fail closed
+    name = context.command.name
+    if name not in bot.command_perms.known_command_names():
+        return True  # префикс-only: гейт (или его отсутствие) — в коге команды
+
+    app_command = getattr(context.command, "app_command", None)
+    default_perms = getattr(app_command, "default_permissions", None)
+    member_perms = context.channel.permissions_for(context.author)
+
+    return bot.command_perms.allows(
+        command_name=name,
+        member_role_ids=frozenset(r.id for r in context.author.roles),
+        member_id=context.author.id,
+        channel_id=context.channel.id,
+        has_default_perms=meets_default_permissions(default_perms, member_perms),
+    )
 
 
 def run_bot(config: Config) -> int:

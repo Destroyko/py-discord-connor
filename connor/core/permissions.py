@@ -157,6 +157,11 @@ class CommandPermissionsCache:
     def ready(self) -> bool:
         return self._resolved is not None
 
+    def known_command_names(self) -> frozenset[str]:
+        """Имена команд, которые есть в синкнутом дереве (для которых имеет смысл
+        консультироваться с этим кэшем). Префикс-only команды сюда не попадают."""
+        return frozenset(self._name_to_id)
+
     async def load(self, http: _PermsHTTP, *, command_ids: dict[str, int]) -> None:
         raw = await http.get_guild_application_command_permissions(
             self._application_id, self._guild_id
