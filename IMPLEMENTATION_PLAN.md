@@ -99,11 +99,12 @@ P5 Тесты «зелёные» целиком · P6 Разное (!kiss) + д�
 - [x] **P0.1 Каркас проекта.** `pyproject.toml` (discord.py 2.7, aiosqlite, python-dotenv, ruff, pytest, pytest-asyncio; ruff игнорит RUF001-003 — проект русскоязычный), раскладка каталогов (`connor/{core,cogs,db}`, `config/*.toml`-заготовки, `migrations/`, `deploy/`, `tests/`), `.env.example` со всеми 19 ключами, `__main__.py` со схемой `config → validate → (fail-fast, exit 2) → bot.run`. Конфиг валидируется ДО импорта `discord`. `.venv` создан, `pip install -e ".[dev]"`.
   - Готово когда: `python -m connor` на пустом `.env` → exit 2 + полный список всех недостающих ключей без traceback; на валидном → доходит до заглушки `bot.run`. ✓
   - Проверка: `manual` ✓ (оба пути), `pytest` ✓ (3 теста в `tests/test_config.py`), `ruff check`+`format --check` ✓.
-- [ ] **P0.2 `connor/config.py` — загрузка и валидация.** Ref: `environment.md` § "Конфигурация", `development.md` § "Валидация конфигурации".
-  - Обязательные `.env`: `GUILD_ID`, `BOT_TOKEN`, `DB_PATH`; ID ролей `ROLE_RABOTYAGA`, `ROLE_MOLCHUN`, `ROLE_DUSHA`; ID каналов `CH_REKVESTY`, `CH_BOT_KOMANDY`, `CH_ANTIRABOTYAGI`, `CH_AUDIT`, `CH_VYDACHA`, `CH_BANY`, `CH_FLUDISLAVL`, `CH_CHEKLIST`, `CH_CHEKLIST2`, `CH_PREDLOZHKA`, `CH_TRIGGER_VOICE`; ID категорий `CAT_RODDOM`, `CAT_PRIVATE_VOICE`.
-  - Все проблемы собираются в один список, процесс завершается ненулевым кодом; ID валидируются как snowflake (int); лимиты модулей (`60s–28d`, `100`, `300`) проверяются здесь же.
-  - Готово когда: битый `.env` печатает полный список проблем; корректный — грузится в типизированный объект.
-  - Проверка: `unit` (валидатор), `manual`.
+- [x] **P0.2 `connor/config.py` — загрузка и валидация.** Ref: `environment.md` § "Конфигурация", `development.md` § "Валидация конфигурации".
+  - `.env` (19 ключей): `BOT_TOKEN`,`DB_PATH` — непустые строки; `GUILD_ID` + `ROLE_*`/`CH_*`/`CAT_*` — целые snowflake `0 < id ≤ 2^63-1`. Возвращаются как `Config.roles/channels/categories` (dict без префикса).
+  - `config/*.toml` (5 файлов) грузятся `tomllib`, каждый в типизированный под-конфиг (`MuteConfig`/`RoleGiverConfig`/`VoicesConfig`/`ModerationChatConfig`/`PurgeConfig`). **Файл обязан существовать**, каждый документированный ключ обязан присутствовать и иметь верный тип/диапазон — иначе проблема в общий список. Границы мьюта `60s–28d` — константы в коде (P1.4), не в конфиге.
+  - Все проблемы (env + все конфиги) — в один `ConfigError.problems`, `__main__` печатает и выходит с кодом 2.
+  - Готово когда: битый `.env`/конфиг → полный список проблем; корректный → типизированный `Config`. ✓
+  - Проверка: `unit` ✓ (`tests/test_config.py`, 10 тестов: пропуски env, не-int/0/отрицательный ID, отсутствующий toml-файл, отсутствующий ключ, неверный тип, отрицательное значение, bool-тип, аггрегация env+toml, валидность shipped-конфигов); `manual` ✓ (битый `.env` → точные сообщения).
 - [ ] **P0.3 `logging_setup.py`.** Единый `logging`, уровни INFO/WARNING/ERROR, формат с контекстом, без `print`. Ref: `development.md` § "Логирование".
   - Проверка: `review`.
 - [ ] **P0.4 Слой БД.** `connor/db/`: коннект `aiosqlite` с `PRAGMA journal_mode=WAL / synchronous=NORMAL / foreign_keys=ON / busy_timeout=5000` при открытии, `ping()` = `SELECT 1`, применение `migrations/*.sql` по порядку с `schema_version`. Первая миграция `0001_init.sql` создаёт **все** таблицы (см. «Схема БД» ниже).
@@ -348,7 +349,7 @@ Ref: `development.md` § "Тестирование" — тесты обязан�
 
 | Фаза | Пунктов | Готово |
 |---|---|---|
-| P0 Фундамент | 6 | 1 (P0.1) |
+| P0 Фундамент | 6 | 2 (P0.1, P0.2) |
 | P1 Ядро (P1.0 сквозное + P1.1–1.7) | 7+7 | 0 |
 | P2 Независимые (A/B/C/D) | 5+4+3+6 | 0 |
 | P3 Кластер «работяга» | 3+2+3+6 | 0 |
