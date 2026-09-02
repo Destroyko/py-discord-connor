@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import discord
 import pytest
 
@@ -12,7 +10,6 @@ from connor.cogs.purge import (
     PurgeError,
     PurgeSpec,
     build_purge_log_embed,
-    in_roddom,
     message_matches,
     parse_purge_args,
 )
@@ -111,24 +108,6 @@ def test_match_links_images_text() -> None:
     assert message_matches(PurgeSpec("text", 1), _v(text="hi")) is True
     assert message_matches(PurgeSpec("text", 1), _v(text="hi", attach=True)) is False
     assert message_matches(PurgeSpec("text", 1), _v(text="see http://x", link=True)) is False
-
-
-# --- in_roddom ---------------------------------------------------------------------
-
-
-def test_in_roddom_direct_channel() -> None:
-    ch = SimpleNamespace(category_id=777)
-    assert in_roddom(ch, 777) is True
-    assert in_roddom(ch, 111) is False
-
-
-def test_in_roddom_thread_resolves_parent() -> None:
-    thread = SimpleNamespace(category_id=None, parent=SimpleNamespace(category_id=777))
-    assert in_roddom(thread, 777) is True
-
-
-def test_in_roddom_no_category() -> None:
-    assert in_roddom(SimpleNamespace(category_id=None, parent=None), 777) is False
 
 
 # --- embed ------------------------------------------------------------------------

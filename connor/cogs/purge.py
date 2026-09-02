@@ -20,6 +20,7 @@ import discord
 from discord.ext import commands
 from discord.utils import utcnow
 
+from connor.core.channels import in_roddom
 from connor.core.targets import parse_target_id
 
 if TYPE_CHECKING:
@@ -147,15 +148,6 @@ def _view(message: discord.Message) -> MsgView:
         has_image=any((att.content_type or "").startswith("image/") for att in message.attachments),
         has_attachment=len(message.attachments) > 0,
     )
-
-
-def in_roddom(channel: object, roddom_category_id: int) -> bool:
-    """Канал (или его родитель для тредов) лежит в модераторской категории «роддом»."""
-    category_id = getattr(channel, "category_id", None)
-    if category_id is None:
-        parent = getattr(channel, "parent", None)
-        category_id = getattr(parent, "category_id", None)
-    return category_id == roddom_category_id
 
 
 def build_purge_log_embed(
