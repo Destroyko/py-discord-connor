@@ -2,11 +2,17 @@
 
 ``/add`` / ``/del`` (+``!``): добавить/убрать из анти-списка, изъять/вернуть роль
 «работяга», при необходимости поставить/снять точечный запрет писать в «предложку».
-Наблюдение за ручными изменениями роли — отдельный механизм (P3.2).
+
+Наблюдение за ручными изменениями роли (``on_member_update`` + журнал аудита с
+задержкой): снятие роли вручную модератором → лог в ``#антиработяги`` (как у
+``/add``, но с author-модератором); выдача роли вручную анти-работяге → авто-снятие
+анти-статуса + лог (как у ``/del``). Изменения, сделанные самим ботом внутри
+``/add``/``/del``, watcher игнорирует (команда уже отчиталась).
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from time import time
 from typing import TYPE_CHECKING
@@ -32,6 +38,10 @@ _ERR_ALREADY = "Пользователь {mention} уже существует �
 _ROLE_REMOVE_FAILED = "Я не смог изъять роль так как пользователь не найден или не имеет такой роли"
 _ROLE_RETURNED = "Роль возвращена"
 _FOOTER = "Claptrap желает вам приятного дня"
+
+#: журнал аудита появляется в API не сразу после события (см. anti.md)
+_AUDIT_DELAY_SECONDS = 5
+_MANUAL_GRANT_REASON = "роль «работяга» выдана вручную"
 
 _ROLE_REMOVED_DESC = (
     "{mention}\n"
@@ -184,6 +194,82 @@ class Anti(commands.Cog):
 
         await ctx.send(embed=build_del_embed(mention, reason_text))
         await ctx.send(_ROLE_RETURNED)
+
+    # -- наблюдение за ручными изменениями роли «работяга» --------------------
+
+    @commands.Cog.listener()
+    async def on_member_update(self, before: discord.Member, after: discord.Member) -> None:
+        role_id = self.bot.config.roles["RABOTYAGA"]
+        had = any(r.id == role_id for r in before.roles)
+        has = any(r.id == role_id for r in after.roles)
+        if had == has:
+            return  # роль «работяга» не менялась
+
+        granted = has
+        try:
+            await asyncio.sleep(_AUDIT_DELAY_SECONDS)
+            actor = await self._audit_actor(after.guild, after.id, granted=granted)
+            if actor is None:
+                log.warning(
+                    "не нашёл в журнале аудита, кто %s роль «работяга» у %s (%d)",
+                    "выдал" if granted else "снял",
+                    after,
+                    after.id,
+                )
+                return
+            if self.bot.user is not None and actor.id == self.bot.user.id:
+                return  # изменил сам бот в рамках /add или /del — уже отчитались
+            if granted:
+                await self._on_manual_grant(after, actor)
+            else:
+                await self._on_manual_removal(after, actor)
+        except Exception:
+            log.exception("watcher роли «работяга»: сбой обработки для %s (%d)", after, after.id)
+
+    async def _audit_actor(
+        self, guild: discord.Guild, target_id: int, *, granted: bool
+    ) -> discord.User | discord.Member | None:
+        role_id = self.bot.config.roles["RABOTYAGA"]
+        async for entry in guild.audit_logs(
+            limit=10, action=discord.AuditLogAction.member_role_update
+        ):
+            if entry.target is None or entry.target.id != target_id:
+                continue
+            side = entry.after.roles if granted else entry.before.roles
+            if any(getattr(r, "id", None) == role_id for r in (side or [])):
+                return entry.user
+        return None
+
+    def _antirabotyagi(self, guild: discord.Guild) -> discord.abc.Messageable | None:
+        channel_id = self.bot.config.channels["ANTIRABOTYAGI"]
+        channel = guild.get_channel(channel_id)
+        if channel is None:
+            log.error("канал #антиработяги (ID=%d) не найден — лог наблюдения пропущен", channel_id)
+        return channel
+
+    async def _on_manual_removal(
+        self, member: discord.Member, actor: discord.User | discord.Member
+    ) -> None:
+        # публикуется независимо от анти-статуса цели
+        channel = self._antirabotyagi(member.guild)
+        if channel is not None:
+            await channel.send(embed=build_role_removed_embed(member.mention, moderator=actor))
+
+    async def _on_manual_grant(
+        self, member: discord.Member, actor: discord.User | discord.Member
+    ) -> None:
+        if not await self.anti_repo.contains(member.id):
+            return  # не в анти-списке — не событие для бота
+        await self.anti_repo.remove(member.id)
+
+        predlozhka = self._predlozhka(member.guild)
+        if predlozhka is not None:
+            await clear_deny(predlozhka, member, self.pred_repo)
+
+        channel = self._antirabotyagi(member.guild)
+        if channel is not None:
+            await channel.send(embed=build_del_embed(member.mention, _MANUAL_GRANT_REASON))
+            await channel.send(_ROLE_RETURNED)
 
 
 async def setup(bot: commands.Bot) -> None:
