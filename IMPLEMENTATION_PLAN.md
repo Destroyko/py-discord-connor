@@ -140,7 +140,7 @@ P5 Тесты «зелёные» целиком · P6 Разное (!kiss) + д�
 
 - [ ] **P1.0a Все фоновые циклы отказоустойчивы.** Тело каждой итерации `tasks.loop` (минутный тик Voices и любой другой) обёрнуто в `try/except Exception` → лог ERROR с контекстом → **цикл продолжается**; дополнительно навешан `@loop.error`. Недельная перевыдача выполняется внутри такого же барьера — исключение в ней не должно убивать минутный цикл. Причина: `discord.py` `tasks.loop` при необработанном исключении **молча останавливается**.
   - Проверка: `unit` (инъекция исключения в одну итерацию — цикл жив, следующая итерация прошла).
-- [ ] **P1.0b None-guard на конфиг-сущности в рантайме.** Любой `guild.get_channel(ID)`/`guild.get_role(ID)` вне preflight проверяется на `None`: лог ERROR (`<сущность> ID=<...> не найдена — <действие> пропущено`), действие пропускается, исключение не бросается. Канал/роль могли удалить после старта.
+- [~] **P1.0b None-guard на конфиг-сущности в рантайме.** Любой `guild.get_channel(ID)`/`guild.get_role(ID)` вне preflight проверяется на `None`: лог ERROR (`<сущность> ID=<...> не найдена — <действие> пропущено`), действие пропускается, исключение не бросается. Канал/роль могли удалить после старта. **Начато:** preflight (`_check_channel`, `check_managed_role`) уже так делает; общий резолвер-хелпер + применение по всем call-site — по мере появления модулей (P2+).
   - Проверка: `unit` (обёртка-резолвер), `review` по всем call-site.
 - [ ] **P1.0c Единый guard `on_message`.** Общий ранний выход для всех потребителей (`moderationChat`, `purge`, `check`-предложка, `mute`-реконсиляция, `!kiss`, префиксные команды): `message.author.bot` OR `message.webhook_id is not None` OR `message.author == bot.user` → выход. Защита от петель обратной связи.
   - Проверка: `unit` (предикат), `review`.
@@ -166,8 +166,8 @@ P5 Тесты «зелёные» целиком · P6 Разное (!kiss) + д�
   - **P1.5b (рантайм):** `CommandPermissionsCache(application_id, guild_id)` — `load(http, command_ids)` (живой `http.get_guild_application_command_permissions`), `apply_update(target_id, overwrites)` (по `on_raw_app_command_permissions_update`; пустой список = оверрайды сняты → падение на app_default), `invalidate()`, `allows(command_name, …)` — **fail closed** (`False`), пока не прогружено. Подключено в `bot.py`: `setup_hook` грузит после синка (при `HTTPException` — лог + гейт закрыт), listener `on_raw_app_command_permissions_update` (фильтр по своей гильдии/приложению).
   - `default_member_permissions` мод-команд = `moderate_members`, проверяется как эффективное право в канале вызова — `Manage Channels` владельца комнаты `moderate_members` не даёт, `!mute` из его комнаты не проходит.
   - Проверка: `unit` ✓ (`tests/test_permissions.py`, 21: разбор+типы+app_default, весь приоритет, кэш — fail-closed/load/lookup-by-name/apply_update add-clear-app-level/before-load-noop/invalidate); `manual` — канальные оверрайды на живом боте (после токена).
-- [ ] **P1.6 `core/dm_guard.py`.** В ЛС боту: slash — Discord сам не пускает (guild-only регистрация); `!`-команды — бот проверяет `message.guild is None` и молча игнорит всё, кроме `!vdel` и `!ban_list`. Ref: `rules.md` § "Команды в ЛС".
-  - Проверка: `unit` (роутинг), `manual`.
+- [x] **P1.6 `core/dm_guard.py`.** `DM_ALLOWED_COMMANDS = {"vdel", "ban_list"}`, `is_allowed_in_dm(name)`. В `bot.py`: глобальный чек `_dm_guard_check` (в гильдии → пропуск; в ЛС → только whitelist, иначе `CheckFailure`); `on_command_error` молчит на `CommandNotFound`/`CheckFailure` (покрывает и DM-guard, и будущий гейт Command Permissions на `!`-пути), прочее — `log.error` с контекстом (не голый traceback; ошибки разбора аргументов модули ловят сами). Ref: `rules.md` § "Команды в ЛС".
+  - Проверка: `unit` ✓ (`tests/test_dm_guard.py`, 4: `is_allowed_in_dm` + `_dm_guard_check` — гильдия/whitelist/блок/нет команды).
 - [x] **P1.7 `core/preflight.py` + ког `healthcheck`.**
   - **P1.7a (чистое):** `CheckResult(section,label,ok,detail,fatal)` c `.line` (`[startup][<раздел>] <label>: OK|ОШИБКА — <деталь>`); `any_fatal`, `summary_line` (`[startup] ИТОГ: …`), `format_uptime` (`4д 3ч 12м`); отдельные проверки `check_guild`/`check_intents`/`check_db` (fatal), `check_managed_role` (резолв + позиция бота строго выше, `None` = не найдена), `check_guild_permissions`, `check_channel` (не найден / не хватает прав), `check_command_permissions_api` (не fatal — fail closed). Всё на примитивах.
   - **P1.7b (оркестратор + подключение):** `ConnorBot.run_preflight()` собирает входы и зовёт `check_*`: гильдия по ID, intents (`self.intents`), БД `ping()`, 3 управляемые роли (позиция vs `guild.me.top_role`), guild-level права (9 из таблицы `development.md`), 11 каналов + 2 категории из `.env` (резолв + `permissions_for(guild.me)` по таблице), AFK-канал (инфо, `None` — не ошибка), Command Permissions API (живой `get_guild_application_command_permissions`). `on_ready` — один раз (флаг, P1.0f), логирует построчно (OK→INFO, warn→WARNING, fatal→ERROR) + ИТОГ; при `any_fatal` → `_exit_code=1` + `close()`; `run_bot` возвращает `_exit_code`. БД подключается в `setup_hook` (ошибка миграций = бот не поднялся, exit 1), закрывается в `close()`. Ког `cogs/healthcheck.py` — slash-only, ephemeral, `default_permissions(moderate_members=True)`, зовёт `bot.run_preflight()` + `Аптайм: …` (от `on_ready`, не персистентно).
@@ -356,7 +356,7 @@ Ref: `development.md` § "Тестирование" — тесты обязан�
 | Фаза | Пунктов | Готово |
 |---|---|---|
 | P0 Фундамент | 6 | 6 ✅ |
-| P1 Ядро (P1.0 сквозное + P1.1–1.7) | 7+7 | 8 (P1.0f, P1.1–1.5, P1.7) |
+| P1 Ядро (P1.0 сквозное + P1.1–1.7) | 7+7 | 9 (P1.0f, P1.1–1.7); P1.0b начат, P1.0a/c/d/e/g — в P2/P4 |
 | P2 Независимые (A/B/C/D) | 5+4+3+6 | 0 |
 | P3 Кластер «работяга» | 3+2+3+6 | 0 |
 | P4 Voices | 3+2+4+2+4+1 | 0 |

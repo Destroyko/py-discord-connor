@@ -24,6 +24,7 @@ from discord.ext import commands
 
 from connor.config import Config
 from connor.core import preflight
+from connor.core.dm_guard import is_allowed_in_dm
 from connor.core.permissions import CommandPermissionsCache
 from connor.db import Database
 
@@ -125,6 +126,26 @@ class ConnorBot(commands.Bot):
         self._preflight_done = False
         self._ready_at: float | None = None
         self._exit_code = 0
+
+        self.add_check(_dm_guard_check)
+
+    async def on_command_error(
+        self, context: commands.Context, exception: commands.CommandError
+    ) -> None:
+        # Молчим на неизвестную команду и на любой заблокированный вызов
+        # (DM-guard, Command Permissions на !-пути) — так требует rules.md.
+        if isinstance(exception, commands.CommandNotFound | commands.CheckFailure):
+            return
+        # Ошибки разбора аргументов модули ловят сами и отвечают точным текстом;
+        # сюда попадает только неожиданное — логируем с контекстом, не голым traceback.
+        log.error(
+            "ошибка команды %s (вызвал %s в %s): %s",
+            context.command,
+            context.author,
+            context.channel,
+            exception,
+            exc_info=exception,
+        )
 
     async def setup_hook(self) -> None:
         await self.db.connect()  # прогон миграций; ошибка здесь = бот не поднялся (exit 1)
@@ -289,6 +310,15 @@ class ConnorBot(commands.Bot):
         except discord.HTTPException as exc:
             return preflight.check_command_permissions_api(reachable=False, error=str(exc))
         return preflight.check_command_permissions_api(reachable=True)
+
+
+async def _dm_guard_check(context: commands.Context) -> bool:
+    """Глобальный чек: в ЛС проходят только ``!vdel`` / ``!ban_list``, остальное —
+    ``CheckFailure`` (гасится в ``on_command_error`` без ответа). В гильдии — пропускаем.
+    """
+    if context.guild is not None:
+        return True
+    return bool(context.command) and is_allowed_in_dm(context.command.name)
 
 
 def run_bot(config: Config) -> int:
