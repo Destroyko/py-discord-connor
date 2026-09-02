@@ -60,10 +60,10 @@ def test_channel_embed_first_and_update() -> None:
         time_str="48h",
         reason="ещё",
         updated=True,
-        old_time="0д 1ч 0м",
+        old_time="10ч",
     )
     assert upd.colour == discord.Color.yellow()
-    assert upd.description == "<@5> перемьючен с 0д 1ч 0м на 48h"
+    assert upd.description == "<@5> перемьючен с 10ч на 48h"
 
 
 # --- /mute branch ordering ----------------------------------------------------

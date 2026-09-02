@@ -13,6 +13,7 @@ from connor.core.timefmt import (
     fmt_full_minute,
     fmt_short,
     format_hms,
+    format_remaining_coarse,
     parse_duration,
     parse_mute_duration,
 )
@@ -99,3 +100,12 @@ def test_format_hms() -> None:
     assert format_hms(60) == "0д 0ч 1м"
     assert format_hms(4 * 86400 + 3 * 3600 + 12 * 60 + 5) == "4д 3ч 12м"
     assert format_hms(-10) == "0д 0ч 0м"
+
+
+def test_format_remaining_coarse() -> None:
+    assert format_remaining_coarse(10 * 3600 + 40 * 60) == "10ч"  # 0д 10ч 40м -> 10ч
+    assert format_remaining_coarse(3 * 86400 + 5 * 3600) == "77ч"  # часы, не дни
+    assert format_remaining_coarse(90 * 60) == "1ч"  # 1.5 ч -> 1ч
+    assert format_remaining_coarse(45 * 60) == "45м"
+    assert format_remaining_coarse(59) == "59с"
+    assert format_remaining_coarse(-5) == "0с"

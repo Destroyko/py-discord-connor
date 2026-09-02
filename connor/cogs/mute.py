@@ -31,7 +31,7 @@ from connor.core.msg_guard import should_process_message
 from connor.core.mute_state import MuteState
 from connor.core.targets import parse_target_id
 from connor.core.texts import ERR_NO_TARGET, ERR_TARGET_ABSENT, REASON_NOT_GIVEN, SELF_MODERATION
-from connor.core.timefmt import format_hms, parse_mute_duration
+from connor.core.timefmt import format_remaining_coarse, parse_mute_duration
 from connor.logging_setup import log_action_error
 
 if TYPE_CHECKING:
@@ -97,10 +97,12 @@ def _has_active_timeout(member: discord.Member) -> bool:
 
 
 def _remaining_str(member: discord.Member) -> str:
+    """Остаток текущего таймаута одним старшим разрядом — фолбэк для ``<old_time>``,
+    когда исходная длительность мьюта неизвестна."""
     until = member.timed_out_until
     if until is None:
         return "?"
-    return format_hms(int((until - utcnow()).total_seconds()))
+    return format_remaining_coarse(int((until - utcnow()).total_seconds()))
 
 
 class Mute(commands.Cog):

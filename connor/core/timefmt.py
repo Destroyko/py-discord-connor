@@ -57,12 +57,28 @@ def fmt_short(value: datetime | int | float) -> str:
 
 
 def format_hms(total_seconds: int) -> str:
-    """``4д 3ч 12м`` — грубая длительность (аптайм, остаток таймаута)."""
+    """``4д 3ч 12м`` — грубая длительность (аптайм)."""
     total_seconds = max(0, total_seconds)
     days, rem = divmod(total_seconds, 86400)
     hours, rem = divmod(rem, 3600)
     minutes = rem // 60
     return f"{days}д {hours}ч {minutes}м"
+
+
+def format_remaining_coarse(total_seconds: int) -> str:
+    """Один старший ненулевой разряд, с приоритетом часов над днями.
+
+    ``≥ 1 часа`` → ``<N>ч`` (даже если это многие сутки: ``77ч``); иначе ``<N>м``;
+    иначе ``<N>с``. Пример: остаток ``0д 10ч 40м`` → ``10ч``.
+    Используется как ``<old_time>`` в embed «перемьючен с … на …», когда исходная
+    длительность мьюта неизвестна (нет записи резервации).
+    """
+    total_seconds = max(0, total_seconds)
+    if total_seconds >= 3600:
+        return f"{total_seconds // 3600}ч"
+    if total_seconds >= 60:
+        return f"{total_seconds // 60}м"
+    return f"{total_seconds}с"
 
 
 # --------------------------------------------------------------------------- #
