@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 
 
@@ -34,13 +35,14 @@ def main() -> int:
     from connor.logging_setup import setup_logging
 
     setup_logging()
+    log = logging.getLogger("connor.startup")
 
     try:
         config = load_config()
     except ConfigError as exc:
-        print("Ошибка конфигурации — бот не запущен:", file=sys.stderr)
+        log.error("конфигурация невалидна, бот не запущен (%d проблем):", len(exc.problems))
         for problem in exc.problems:
-            print(f"  - {problem}", file=sys.stderr)
+            log.error("  %s", problem)
         return 2
 
     from connor.bot import run_bot
