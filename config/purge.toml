@@ -1,0 +1,4 @@
+# Конфиг модуля purge (см. py-discord-connor.wiki/components/purge.md).
+
+# Мягкий потолок сообщений за один вызов !purge (запрошено больше — режется молча).
+soft_limit = 300
