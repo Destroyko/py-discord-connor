@@ -8,7 +8,17 @@
 #   journalctl -u connor -f          # смотреть лог (строки [startup] — стартовая диагностика)
 #
 # Пути ниже — конвенция /opt/connor; поменять, если развёрнуто в другом месте.
-# EnvironmentFile — тот же .env, что и при локальном запуске (19 ключей, см. .env.example).
+#
+# .env НЕ подключён через EnvironmentFile= — намеренно. У systemd свой примитивный
+# парсер .env-файлов: он режет комментарий, только если "#" — первый символ строки,
+# и НЕ поддерживает комментарий после значения (`KEY=123   # пояснение`, как во
+# всём .env.example). При такой строке systemd кладёт в переменную окружения весь
+# хвост строки целиком, вместе с "# пояснение" — и это ломает валидацию конфига
+# ("не целое число"). Хуже того: раз EnvironmentFile выставляет переменную ДО
+# старта Python, собственный `load_dotenv()` бота (который такие комментарии
+# парсит верно) её не перезапишет — `load_dotenv()` по умолчанию не трогает уже
+# установленные переменные окружения. Поэтому единственный источник .env — сам
+# бот (``connor/__main__.py`` → ``load_dotenv()``), systemd в это не вмешивается.
 
 [Unit]
 Description=Connor — Discord moderation bot (single guild)
@@ -25,7 +35,6 @@ Type=simple
 User=connor
 Group=connor
 WorkingDirectory=/opt/connor
-EnvironmentFile=/opt/connor/.env
 ExecStart=/opt/connor/.venv/bin/python -m connor
 
 Restart=on-failure
