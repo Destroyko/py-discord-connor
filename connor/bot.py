@@ -65,6 +65,11 @@ _GUILD_PERMS: tuple[tuple[str, str], ...] = (
     ("view_audit_log", "View Audit Log"),
     ("move_members", "Move Members"),
     ("manage_guild", "Manage Server"),
+    # нужны боту самому, иначе Discord не даёт выдать их через overwrite роли
+    # модератора на приватных войс-комнатах (анти-эскалация: нельзя раздавать
+    # право, которого нет у самого раздающего) — см. Voices.md "Создание приватной комнаты"
+    ("mute_members", "Mute Members"),
+    ("deafen_members", "Deafen Members"),
 )
 
 _VSE = (

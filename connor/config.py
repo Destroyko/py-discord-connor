@@ -34,6 +34,8 @@ _ENV_ID_KEYS: tuple[str, ...] = (
     "ROLE_RABOTYAGA",
     "ROLE_MOLCHUN",
     "ROLE_DUSHA",
+    # роли, на которые бот только ссылается (не выдаёт и не снимает)
+    "ROLE_MODERATOR",
     # каналы
     "CH_REKVESTY",
     "CH_BOT_KOMANDY",
@@ -112,7 +114,7 @@ class Config:
     guild_id: int
     bot_token: str
     db_path: str
-    roles: dict[str, int]  # RABOTYAGA / MOLCHUN / DUSHA
+    roles: dict[str, int]  # RABOTYAGA / MOLCHUN / DUSHA / MODERATOR
     channels: dict[str, int]  # REKVESTY / BOT_KOMANDY / ...
     categories: dict[str, int]  # RODDOM / PRIVATE_VOICE
     mute: MuteConfig

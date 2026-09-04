@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _OWNER_OVERWRITE = discord.PermissionOverwrite(view_channel=True, manage_channels=True)
+_MODERATOR_OVERWRITE = discord.PermissionOverwrite(mute_members=True, deafen_members=True)
 
 
 class VoicesRooms(commands.Cog):
@@ -107,11 +108,18 @@ class VoicesRooms(commands.Cog):
         cfg = self.bot.config.voices
         now = int(time())
 
-        # владельцу — ровно View + Manage Channels; проактивно — deny для «активных»
-        # записей бан-листа (окно 24 ч). Всё одним overwrites при создании канала.
+        # владельцу — ровно View + Manage Channels; модератору — Mute/Deafen Members
+        # (не более того — остальные модераторские права на приватную комнату не
+        # распространяются); проактивно — deny для «активных» записей бан-листа
+        # (окно 24 ч). Всё одним overwrites при создании канала.
         overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite] = {
             member: _OWNER_OVERWRITE
         }
+        moderator_role = self._resolver.role(
+            guild, self.bot.config.roles["MODERATOR"], 'роль "модератор"'
+        )
+        if moderator_role is not None:
+            overwrites[moderator_role] = _MODERATOR_OVERWRITE
         window = cfg.banlist_active_window_hours * 3600
         deny = discord.PermissionOverwrite(connect=False, send_messages=False)
         for banned_id in await self.banlist.active_ids(member.id, since_ts=now - window):
@@ -126,8 +134,8 @@ class VoicesRooms(commands.Cog):
                 overwrites=overwrites,
                 reason=f"приватная комната для {member} ({member.id})",
             )
-        except discord.HTTPException:
-            log_action_error(log, "создать приватную комнату", target=member)
+        except discord.HTTPException as exc:
+            log_action_error(log, "создать приватную комнату", target=member, exc=exc)
             return
 
         # slowmode не принимается create_voice_channel — правим отдельно, если задан

@@ -17,6 +17,7 @@ from connor.db.repo_voice_rooms import RepoVoiceRooms
 _TRIGGER_ID = 300
 _CATEGORY_ID = 101
 _NEW_ROOM_ID = 555
+_MODERATOR_ROLE_ID = 700
 
 
 def _http_exc(status: int = 400) -> discord.HTTPException:
@@ -40,6 +41,7 @@ def _bot(db: Database) -> SimpleNamespace:
             guild_id=1,
             channels={"TRIGGER_VOICE": _TRIGGER_ID},
             categories={"PRIVATE_VOICE": _CATEGORY_ID},
+            roles={"MODERATOR": _MODERATOR_ROLE_ID},
             voices=_voices_cfg(),
         ),
     )
@@ -60,13 +62,17 @@ def _category(new_channel: object) -> MagicMock:
     return cat
 
 
-def _guild(extra: dict | None = None) -> SimpleNamespace:
+def _guild(extra: dict | None = None, *, moderator_role: object = None) -> SimpleNamespace:
     channels = dict(extra or {})
 
     def get_channel(cid: int) -> object:
         return channels.get(cid)
 
-    g = SimpleNamespace(get_channel=get_channel, _channels=channels)
+    g = SimpleNamespace(
+        get_channel=get_channel,
+        get_role=lambda _rid: moderator_role,
+        _channels=channels,
+    )
     return g
 
 
@@ -107,6 +113,37 @@ async def test_trigger_creates_and_registers_room(db: Database) -> None:
     member.move_to.assert_awaited_once()
     room = await RepoVoiceRooms(db).get_by_owner(10)
     assert room is not None and room.channel_id == _NEW_ROOM_ID
+
+
+async def test_moderator_role_gets_mute_deafen_overwrite(db: Database) -> None:
+    mod_role = MagicMock(spec=discord.Role)
+    mod_role.id = _MODERATOR_ROLE_ID
+    new_channel = _new_channel()
+    category = _category(new_channel)
+    guild = _guild({_CATEGORY_ID: category}, moderator_role=mod_role)
+    member = _member(10, guild)
+    cog = VoicesRooms(_bot(db))
+
+    await _event(cog, member, _vs(None), _vs(SimpleNamespace(id=_TRIGGER_ID)))
+
+    overwrites = category.create_voice_channel.await_args.kwargs["overwrites"]
+    assert overwrites[mod_role] == discord.PermissionOverwrite(
+        mute_members=True, deafen_members=True
+    )
+
+
+async def test_moderator_role_unresolved_skips_overwrite_without_crash(db: Database) -> None:
+    new_channel = _new_channel()
+    category = _category(new_channel)
+    guild = _guild({_CATEGORY_ID: category})  # get_role -> None по умолчанию
+    member = _member(10, guild)
+    cog = VoicesRooms(_bot(db))
+
+    await _event(cog, member, _vs(None), _vs(SimpleNamespace(id=_TRIGGER_ID)))
+
+    overwrites = category.create_voice_channel.await_args.kwargs["overwrites"]
+    assert member in overwrites
+    assert len(overwrites) == 1  # только владелец — роль модератора не резолвилась
 
 
 async def test_trigger_move_fail_deletes_channel(db: Database) -> None:
