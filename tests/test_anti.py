@@ -11,15 +11,17 @@ from connor.cogs.anti import (
     _ERR_ALREADY,
     _ERR_NOT_IN_LIST,
     _ROLE_REMOVE_FAILED,
-    _ROLE_RETURNED,
+    _ROLE_RETURN_FAILED,
     Anti,
     build_add_embed,
     build_del_embed,
     build_role_removed_embed,
+    build_role_returned_embed,
 )
 from connor.core.texts import ERR_NO_TARGET
 from connor.db import Database
 from connor.db.repo_anti import RepoAnti
+from connor.db.repo_anti_watcher import RepoAntiWatcher
 from connor.db.repo_predlozhka import RepoPredlozhka
 
 # --- pure embed builders --------------------------------------------------------
@@ -27,6 +29,7 @@ from connor.db.repo_predlozhka import RepoPredlozhka
 
 def test_build_add_embed() -> None:
     e = build_add_embed("<@5>", "п11", 1_755_366_570)
+    assert e.title == "Добавление"
     assert e.description == "Пользователь <@5> добавлен в список антиработяг"
     assert e.colour == discord.Color.red()
     assert [f.name for f in e.fields] == ["Причина", "Дата добавления"]
@@ -36,25 +39,39 @@ def test_build_add_embed() -> None:
 
 def test_build_del_embed_has_no_date_field() -> None:
     e = build_del_embed("<@5>", "отсидел")
+    assert e.title == "Удаление"
     assert e.description == "Пользователь <@5> удалён из списка антиработяг"
     assert e.colour == discord.Color.green()
     assert [f.name for f in e.fields] == ["Причина"]
     assert e.footer.text.startswith("Claptrap желает вам приятного дня • ")
 
 
+_MOD = SimpleNamespace(
+    name="enteii", display_name="СерверныйНик", display_avatar=SimpleNamespace(url="http://a")
+)
+
+
 def test_build_role_removed_embed() -> None:
     e = build_role_removed_embed("<@5>")
     assert "**изъяли роль**" in e.description
     assert "Работяга" in e.description
-    assert "!add id/квот причина" in e.description
+    assert e.footer.text is None
     assert e.colour == discord.Color.red()
     assert e.author.name is None  # без модератора
+    assert e.thumbnail.url is None
 
-    m = SimpleNamespace(
-        name="enteii", display_name="СерверныйНик", display_avatar=SimpleNamespace(url="http://a")
-    )
-    e2 = build_role_removed_embed("<@5>", moderator=m)
+    e2 = build_role_removed_embed("<@5>", moderator=_MOD, target_avatar_url="http://target")
     assert e2.author.name == "enteii"  # username, не серверный ник
+    assert e2.thumbnail.url == "http://target"
+
+
+def test_build_role_returned_embed() -> None:
+    e = build_role_returned_embed("<@5>", moderator=_MOD, target_avatar_url="http://target")
+    assert "**вернули роль**" in e.description
+    assert "Работяга" in e.description
+    assert e.colour == discord.Color.green()
+    assert e.author.name == "enteii"
+    assert e.thumbnail.url == "http://target"
 
 
 # --- /add, /del flow (real DB, fake Discord) -----------------------------------
@@ -66,6 +83,7 @@ def _member(mid: int, *, roles: list[object] | None = None) -> SimpleNamespace:
         roles=roles if roles is not None else [],
         remove_roles=AsyncMock(),
         add_roles=AsyncMock(),
+        display_avatar=SimpleNamespace(url=f"http://avatar/{mid}"),
     )
 
 
@@ -89,12 +107,20 @@ def _cog(db: Database, *, user_exists: bool = True) -> Anti:
 
 
 def _ctx(*, members: dict[int, SimpleNamespace], role: object = None, predlozhka: object = None):
+    async def fetch_member(i: int) -> SimpleNamespace:
+        member = members.get(i)
+        if member is None:
+            raise discord.NotFound(SimpleNamespace(status=404, reason="x"), "no")
+        return member
+
     guild = SimpleNamespace(
         get_member=lambda i: members.get(i),
         get_role=lambda _i: role,
         get_channel=lambda _i: predlozhka,
+        fetch_member=fetch_member,
     )
-    return SimpleNamespace(guild=guild, author=SimpleNamespace(id=1), send=AsyncMock())
+    author = SimpleNamespace(id=1, name="mod1", display_avatar=SimpleNamespace(url="http://mod"))
+    return SimpleNamespace(guild=guild, author=author, send=AsyncMock())
 
 
 async def _add(cog: Anti, ctx: object, target: str, reason: str | None = None) -> None:
@@ -171,7 +197,20 @@ async def test_del_removes_and_returns_role(db: Database) -> None:
 
     assert await RepoAnti(db).contains(50) is False
     member.add_roles.assert_awaited_once()
-    assert ctx.send.await_args_list[-1].args == (_ROLE_RETURNED,)
+    last_embed = ctx.send.await_args_list[-1].kwargs["embed"]
+    assert "**вернули роль**" in last_embed.description
+    assert last_embed.author.name == "mod1"
+    assert last_embed.thumbnail.url == member.display_avatar.url
+
+
+async def test_del_return_failed_when_member_absent(db: Database) -> None:
+    await RepoAnti(db).add(50, added_at=1, added_by=1)
+    ctx = _ctx(members={}, role=object())
+
+    await _del(_cog(db), ctx, "50", "отсидел")
+
+    assert await RepoAnti(db).contains(50) is False
+    assert ctx.send.await_args_list[-1].args == (_ROLE_RETURN_FAILED,)
 
 
 async def test_del_not_in_list_plain_error(db: Database) -> None:
@@ -206,9 +245,9 @@ async def test_del_deleted_account_cleans_silently(db: Database) -> None:
     ctx.send.assert_awaited_once_with(ERR_NO_TARGET)  # без embed'ов
 
 
-# --- watcher: ручные изменения роли «работяга» --------------------------------
+# --- watcher: опрос audit log --------------------------------------------------
 
-_RABOTYAGA = SimpleNamespace(id=111)
+_RABOTYAGA_ID = 111
 
 
 async def _audit_iter(entries: list[object]):
@@ -216,101 +255,132 @@ async def _audit_iter(entries: list[object]):
         yield entry
 
 
-def _entry(*, target_id: int, actor_id: int, granted: bool) -> SimpleNamespace:
-    role_side = [_RABOTYAGA]
-    return SimpleNamespace(
-        target=SimpleNamespace(id=target_id),
-        user=SimpleNamespace(
+def _entry(
+    *, entry_id: int, target_id: int, actor_id: int | None, granted: bool, unrelated: bool = False
+) -> SimpleNamespace:
+    """``unrelated=True`` — запись про смену другой роли (не «работяга»)."""
+    role_side = [] if unrelated else [SimpleNamespace(id=_RABOTYAGA_ID)]
+    user = (
+        None
+        if actor_id is None
+        else SimpleNamespace(
             id=actor_id,
             name=f"mod{actor_id}",
-            display_name=f"nick{actor_id}",
             display_avatar=SimpleNamespace(url="u"),
-        ),
+        )
+    )
+    return SimpleNamespace(
+        id=entry_id,
+        user_id=actor_id,
+        user=user,
+        target=SimpleNamespace(id=target_id, mention=f"<@{target_id}>"),
         after=SimpleNamespace(roles=role_side if granted else []),
         before=SimpleNamespace(roles=[] if granted else role_side),
     )
 
 
-def _mu_member(uid: int, *, has_role: bool, guild: object) -> SimpleNamespace:
-    return SimpleNamespace(
-        id=uid,
-        mention=f"<@{uid}>",
-        roles=[_RABOTYAGA] if has_role else [],
-        guild=guild,
-    )
+def _guild(*, entries: list[object], antichannel: object = None, latest: list[object] = ()):
+    def audit_logs(**kw):
+        if kw.get("limit") == 1 and "action" not in kw:
+            return _audit_iter(list(latest))
+        return _audit_iter(entries)
 
-
-def _guild(*, entries: list[object], antichannel: object = None):
     return SimpleNamespace(
-        audit_logs=lambda **_kw: _audit_iter(entries),
+        audit_logs=audit_logs,
         get_channel=lambda cid: antichannel if cid == 333 else None,
     )
 
 
-async def _member_update(cog: Anti, before: object, after: object, monkeypatch) -> None:
-    monkeypatch.setattr("connor.cogs.anti.asyncio.sleep", AsyncMock())
-    await Anti.on_member_update(cog, before, after)
+async def _poll(cog: Anti, guild: object) -> None:
+    await Anti._poll_once(cog, guild)
 
 
-async def test_watcher_ignores_unrelated_update(db: Database, monkeypatch) -> None:
-    g = _guild(entries=[])
-    m = _mu_member(50, has_role=True, guild=g)
-    await _member_update(_cog(db), m, m, monkeypatch)  # роль не менялась
-
-
-async def test_watcher_manual_removal_by_mod(db: Database, monkeypatch) -> None:
+async def test_poll_first_run_seeds_cursor_without_processing(db: Database) -> None:
     channel = SimpleNamespace(send=AsyncMock())
-    g = _guild(entries=[_entry(target_id=50, actor_id=7, granted=False)], antichannel=channel)
-    before = _mu_member(50, has_role=True, guild=g)
-    after = _mu_member(50, has_role=False, guild=g)
+    latest = [_entry(entry_id=42, target_id=50, actor_id=7, granted=False)]
+    g = _guild(entries=[], antichannel=channel, latest=latest)
 
-    await _member_update(_cog(db), before, after, monkeypatch)
+    await _poll(_cog(db), g)
+
+    channel.send.assert_not_awaited()  # первый запуск — без ретроактивной обработки истории
+    assert await RepoAntiWatcher(db).get_cursor() == 42
+
+
+async def test_poll_first_run_no_history_leaves_cursor_unset(db: Database) -> None:
+    g = _guild(entries=[], antichannel=None, latest=[])
+    await _poll(_cog(db), g)
+    assert await RepoAntiWatcher(db).get_cursor() is None
+
+
+async def test_poll_ignores_unrelated_role_change(db: Database) -> None:
+    await RepoAntiWatcher(db).set_cursor(1)
+    channel = SimpleNamespace(send=AsyncMock())
+    entry = _entry(entry_id=2, target_id=50, actor_id=7, granted=True, unrelated=True)
+    g = _guild(entries=[entry], antichannel=channel)
+
+    await _poll(_cog(db), g)
+
+    channel.send.assert_not_awaited()
+    assert await RepoAntiWatcher(db).get_cursor() == 2  # курсор всё равно двигается
+
+
+async def test_poll_manual_removal_by_mod(db: Database) -> None:
+    await RepoAntiWatcher(db).set_cursor(1)
+    channel = SimpleNamespace(send=AsyncMock())
+    entry = _entry(entry_id=2, target_id=50, actor_id=7, granted=False)
+    g = _guild(entries=[entry], antichannel=channel)
+
+    await _poll(_cog(db), g)
 
     channel.send.assert_awaited_once()
     embed = channel.send.await_args.kwargs["embed"]
     assert "**изъяли роль**" in embed.description
     assert embed.author.name == "mod7"
+    assert await RepoAntiWatcher(db).get_cursor() == 2
 
 
-async def test_watcher_ignores_removal_by_bot(db: Database, monkeypatch) -> None:
+async def test_poll_ignores_removal_by_bot(db: Database) -> None:
+    await RepoAntiWatcher(db).set_cursor(1)
     channel = SimpleNamespace(send=AsyncMock())
-    g = _guild(entries=[_entry(target_id=50, actor_id=_BOT_ID, granted=False)], antichannel=channel)
-    before = _mu_member(50, has_role=True, guild=g)
-    after = _mu_member(50, has_role=False, guild=g)
+    entry = _entry(entry_id=2, target_id=50, actor_id=_BOT_ID, granted=False)
+    g = _guild(entries=[entry], antichannel=channel)
 
-    await _member_update(_cog(db), before, after, monkeypatch)
+    await _poll(_cog(db), g)
+
     channel.send.assert_not_awaited()
+    assert await RepoAntiWatcher(db).get_cursor() == 2  # запись просмотрена, курсор двигается
 
 
-async def test_watcher_manual_grant_to_anti_user(db: Database, monkeypatch) -> None:
+async def test_poll_manual_grant_to_anti_user(db: Database) -> None:
     await RepoAnti(db).add(50, added_at=1, added_by=1)
+    await RepoAntiWatcher(db).set_cursor(1)
     channel = SimpleNamespace(send=AsyncMock())
-    g = _guild(entries=[_entry(target_id=50, actor_id=7, granted=True)], antichannel=channel)
-    g.get_channel = lambda cid: channel if cid == 333 else None  # предложка -> None (не трогаем)
-    before = _mu_member(50, has_role=False, guild=g)
-    after = _mu_member(50, has_role=True, guild=g)
+    entry = _entry(entry_id=2, target_id=50, actor_id=7, granted=True)
+    g = _guild(entries=[entry], antichannel=channel)
 
-    await _member_update(_cog(db), before, after, monkeypatch)
+    await _poll(_cog(db), g)
 
     assert await RepoAnti(db).contains(50) is False
-    assert channel.send.await_count == 2  # "Удаление" embed + "Роль возвращена"
+    assert channel.send.await_count == 2  # "Удаление" embed + "вернули роль" embed
 
 
-async def test_watcher_ignores_grant_to_non_anti_user(db: Database, monkeypatch) -> None:
+async def test_poll_ignores_grant_to_non_anti_user(db: Database) -> None:
+    await RepoAntiWatcher(db).set_cursor(1)
     channel = SimpleNamespace(send=AsyncMock())
-    g = _guild(entries=[_entry(target_id=50, actor_id=7, granted=True)], antichannel=channel)
-    before = _mu_member(50, has_role=False, guild=g)
-    after = _mu_member(50, has_role=True, guild=g)
+    entry = _entry(entry_id=2, target_id=50, actor_id=7, granted=True)
+    g = _guild(entries=[entry], antichannel=channel)
 
-    await _member_update(_cog(db), before, after, monkeypatch)
+    await _poll(_cog(db), g)
     channel.send.assert_not_awaited()
 
 
-async def test_watcher_actor_not_found(db: Database, monkeypatch) -> None:
+async def test_poll_actor_not_found_logs_and_skips(db: Database) -> None:
+    await RepoAntiWatcher(db).set_cursor(1)
     channel = SimpleNamespace(send=AsyncMock())
-    g = _guild(entries=[], antichannel=channel)  # аудит-лог пуст
-    before = _mu_member(50, has_role=True, guild=g)
-    after = _mu_member(50, has_role=False, guild=g)
+    entry = _entry(entry_id=2, target_id=50, actor_id=None, granted=False)
+    g = _guild(entries=[entry], antichannel=channel)
 
-    await _member_update(_cog(db), before, after, monkeypatch)
+    await _poll(_cog(db), g)
+
     channel.send.assert_not_awaited()
+    assert await RepoAntiWatcher(db).get_cursor() == 2

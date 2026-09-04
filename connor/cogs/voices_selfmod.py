@@ -22,6 +22,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from connor.core.hierarchy import is_self_moderation
 from connor.core.targets import parse_target_id
 from connor.db.repo_voice_banlist import RepoVoiceBanlist
 from connor.db.repo_voice_rooms import RepoVoiceRooms
@@ -34,6 +35,7 @@ log = logging.getLogger(__name__)
 
 _ERR_NO_USER = "Вы не указали пользователя или его нет на сервере"
 _ERR_NO_RIGHTS = "У вас нет прав на это действие или вы не находитесь в голосовом канале"
+_ERR_SELF = "Вы не можете выгнать самого себя"
 _ERR_LIMIT = (
     "Список забаненных пользователей достиг лимита. Используйте команду banList для подробностей"
 )
@@ -53,13 +55,17 @@ _EMBED_DESC_BUDGET = 3800  # запас под лимит embed.description = 40
 
 
 def build_banlist_embeds(banned_ids: list[int]) -> list[discord.Embed]:
-    """Бан-лист для ЛС: синяя полоса, нумерация с 1, `` `<@id>` `` + ``id: <id>``.
+    """Бан-лист для ЛС: синяя полоса, нумерация с 1, кликабельное упоминание + ``id: <id>``.
+
+    Упоминание — настоящий ``<@id>``, не обёрнутый в code-разметку: кликабелен
+    даже если пользователь не резолвится (Discord всё равно рендерит плашку
+    упоминания и подтягивает профиль по id на лету).
 
     До ~100 записей на владельца могут не влезть в один ``description`` (лимит 4096)
     — разбиваем на несколько embed'ов: заголовок только у первого, footer — у
     последнего.
     """
-    blocks = [f"**{i}**\n`<@{uid}>`\nid: {uid}" for i, uid in enumerate(banned_ids, 1)]
+    blocks = [f"**{i}**\n<@{uid}>\nid: {uid}" for i, uid in enumerate(banned_ids, 1)]
 
     chunks: list[list[str]] = [[]]
     used = len(_BANLIST_DESC)
@@ -124,8 +130,10 @@ class VoicesSelfmod(commands.Cog):
             return
         name = ctx.command.name if ctx.command else ""
         if name == "vkick":
-            await ctx.send(_ERR_NO_USER)
-        elif name == "vreturn" or (name == "vdel" and ctx.guild is None):
+            await ctx.reply(_ERR_NO_USER)
+        elif name == "vreturn":
+            await ctx.reply(_ERR_NOT_BANNED)
+        elif name == "vdel" and ctx.guild is None:
             await ctx.send(_ERR_NOT_BANNED)
 
     # -- /vkick ----------------------------------------------------------------------
@@ -149,23 +157,26 @@ class VoicesSelfmod(commands.Cog):
             and author.voice.channel.id == channel.id
         )
         if not in_own_room or channel is None:
-            await ctx.send(_ERR_NO_RIGHTS, ephemeral=True)
+            await ctx.reply(_ERR_NO_RIGHTS, ephemeral=True)
             return
 
         target_id = parse_target_id(target)
         if target_id is None:
-            await ctx.send(_ERR_NO_USER, ephemeral=True)
+            await ctx.reply(_ERR_NO_USER, ephemeral=True)
+            return
+        if is_self_moderation(author.id, target_id):
+            await ctx.reply(_ERR_SELF, ephemeral=True)
             return
         try:
             member = await guild.fetch_member(target_id)
         except discord.HTTPException:  # NotFound и прочее — «нет на сервере»
-            await ctx.send(_ERR_NO_USER, ephemeral=True)
+            await ctx.reply(_ERR_NO_USER, ephemeral=True)
             return
 
         already = await self.banlist.contains(author.id, member.id)
         limit = self.bot.config.voices.banlist_limit
         if not already and await self.banlist.count(author.id) >= limit:
-            await ctx.send(_ERR_LIMIT, ephemeral=True)
+            await ctx.reply(_ERR_LIMIT, ephemeral=True)
             return
 
         # deny на комнату: запрет подключения + встроенного текст-чата; видимость не трогаем
@@ -191,7 +202,7 @@ class VoicesSelfmod(commands.Cog):
                 pass
 
         await self.banlist.upsert(author.id, member.id, int(time()))
-        await ctx.send(
+        await ctx.reply(
             _VKICK_OK.format(mention=member.mention),
             ephemeral=True,
             allowed_mentions=discord.AllowedMentions.none(),
@@ -206,7 +217,7 @@ class VoicesSelfmod(commands.Cog):
     @app_commands.describe(target="Упоминание или id")
     async def vreturn(self, ctx: commands.Context, target: str) -> None:
         text = await self._unban(invoker_id=ctx.author.id, guild=ctx.guild, raw_target=target)
-        await ctx.send(text, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+        await ctx.reply(text, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
     @commands.command(name="vdel")
     async def vdel(self, ctx: commands.Context, target: str) -> None:

@@ -128,10 +128,17 @@ class ModerationChat(commands.Cog):
         if channel is None:
             return
 
-        # 1. контент: текст первой строкой (если был) + все ссылки одним сообщением
+        # 1. контент: текст первой строкой (если был) + все ссылки одним сообщением.
+        # GIF-пикер Discord кладёт саму ссылку на гифку в message.content — если это
+        # весь текст сообщения, комментария автора тут нет, дублировать ссылку не нужно.
+        comment = message.content or ""
+        for link in gif_links:
+            comment = comment.replace(link, "")
+        comment = comment.strip()
+
         parts: list[str] = []
-        if message.content:
-            parts.append(message.content)
+        if comment:
+            parts.append(comment)
         parts.extend(attachment_refs + gif_links)
         await channel.send("\n".join(parts))
 

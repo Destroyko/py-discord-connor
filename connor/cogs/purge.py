@@ -152,10 +152,10 @@ def _view(message: discord.Message) -> MsgView:
 
 
 def build_purge_log_embed(
-    *, author_username: str, author_icon: str | None, nick_text: str, raw_args: str, channel: str
+    *, author_username: str, author_icon: str | None, mention: str, raw_args: str, channel: str
 ) -> discord.Embed:
     embed = discord.Embed(
-        description=f"{nick_text} использовал :pudge: {raw_args} в канале {channel}"
+        description=f"{mention} использовал :pudge: {raw_args} в канале {channel}"
     )
     embed.set_author(name=author_username, icon_url=author_icon)
     return embed
@@ -182,6 +182,10 @@ class Purge(commands.Cog):
             return
 
         await self._run_purge(ctx, result)
+        try:
+            await ctx.message.delete()
+        except discord.HTTPException:
+            pass
         await ctx.send(":pudge:")
         await self._log(ctx, list(args))
 
@@ -219,7 +223,7 @@ class Purge(commands.Cog):
         embed = build_purge_log_embed(
             author_username=embed_author_name(author),
             author_icon=embed_author_icon(author),
-            nick_text=author.display_name,
+            mention=author.mention,
             raw_args=" ".join(args),
             channel=ctx.channel.mention,
         )

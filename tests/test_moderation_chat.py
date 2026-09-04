@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import discord
 
 from connor.cogs.moderation_chat import (
+    ModerationChat,
     build_media_meta_embed,
     build_word_embed,
     extract_gif_links,
@@ -89,3 +93,47 @@ def test_build_media_meta_embed() -> None:
     assert e.title == "#игровой"
     assert [f.name for f in e.fields] == ["Автор", "Ссылка на пост"]
     assert isinstance(e, discord.Embed)
+
+
+# --- ModerationChat._check_media ------------------------------------------------------
+
+
+def _cog(*, channel: object) -> ModerationChat:
+    config = SimpleNamespace(
+        moderation_chat=SimpleNamespace(suspicious_words=(), gif_domains=_GIFS),
+        channels={"CHEKLIST2": 999},
+    )
+    bot = SimpleNamespace(config=config, get_channel=lambda cid: channel if cid == 999 else None)
+    return ModerationChat(bot)  # type: ignore[arg-type]
+
+
+def _message(*, content: str, attachments: list[object] | None = None) -> SimpleNamespace:
+    return SimpleNamespace(
+        content=content,
+        attachments=attachments or [],
+        channel=SimpleNamespace(name="общий"),
+        author=SimpleNamespace(mention="<@1>"),
+        jump_url="https://discord.com/channels/1/2/3",
+    )
+
+
+async def test_check_media_gif_picker_link_not_duplicated() -> None:
+    # весь GIF-пикер кладёт ссылку в message.content — без отдельного текста-комментария
+    # ссылка не должна попадать в пересылку дважды (как "текст" и как "ссылка")
+    channel = SimpleNamespace(send=AsyncMock())
+    cog = _cog(channel=channel)
+
+    await cog._check_media(_message(content="https://tenor.com/view/cat-12345"))
+
+    content_msg = channel.send.await_args_list[0].args[0]
+    assert content_msg == "https://tenor.com/view/cat-12345"
+
+
+async def test_check_media_keeps_comment_text_alongside_link() -> None:
+    channel = SimpleNamespace(send=AsyncMock())
+    cog = _cog(channel=channel)
+
+    await cog._check_media(_message(content="ору с этого https://tenor.com/view/cat-12345"))
+
+    content_msg = channel.send.await_args_list[0].args[0]
+    assert content_msg == "ору с этого\nhttps://tenor.com/view/cat-12345"

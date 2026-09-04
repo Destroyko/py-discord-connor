@@ -4,7 +4,14 @@
 
 - intents: default + Guild Members + Message Content + Voice States;
 - член-кэш частичный (``MemberCacheFlags(voice=True, joined=False)``,
-  ``chunk_guilds_at_startup=False``) — следствия см. P1.0d;
+  ``chunk_guilds_at_startup=False``) — следствия см. P1.0d. Полный кэш здесь не
+  вариант: на гильдии в сотни тысяч участников он съедает сотни МБ — десктопные
+  МБ ОЗУ навсегда, а не разово при рестарте (``chunk_guilds_at_startup`` один раз
+  выгружает всю гильдию, но кэш остаётся в памяти весь аптайм). Вотчер ручных
+  изменений роли «работяга» (``anti.py``) поэтому не полагается на кэш вообще —
+  периодический опрос audit log вместо gateway-события ``on_member_update``;
+  все резолвы участника в командах — через ``fetch_member`` (P1.0d), не голый
+  ``get_member``;
 - ``allowed_mentions`` по умолчанию — ничего не пингуем; места, где пинг нужен
   (перевыдача «Души компании», ``@here`` в roleGiver), передают override явно;
 - все команды регистрируются guild-scoped на ``GUILD_ID`` (мгновенный синк);
@@ -87,11 +94,6 @@ _CHANNEL_PERMS: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
         "PREDLOZHKA",
         "#предложка",
         (*_VS, ("manage_messages", "Manage Messages"), ("manage_channels", "Manage Channels")),
-    ),
-    (
-        "TRIGGER_VOICE",
-        "войс-триггер «создать свою комнату»",
-        (("view_channel", "View"), ("move_members", "Move Members")),
     ),
 )
 #: config.categories-ключ → (метка, нужные права)

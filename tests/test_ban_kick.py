@@ -55,9 +55,17 @@ def _member(mid: int, *, pos: int = 1, bot: bool = False) -> SimpleNamespace:
 
 def _ctx(*, members: dict[int, SimpleNamespace] | None = None, already_banned: bool = False):
     members = members or {}
+
+    async def fetch_member(i: int) -> SimpleNamespace:
+        member = members.get(i)
+        if member is None:
+            raise _NOT_FOUND
+        return member
+
     guild = SimpleNamespace(
         owner_id=999,
         get_member=lambda i: members.get(i),
+        fetch_member=fetch_member,
         fetch_ban=AsyncMock(return_value=object())
         if already_banned
         else AsyncMock(side_effect=_NOT_FOUND),

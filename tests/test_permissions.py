@@ -99,6 +99,22 @@ def test_all_channels_disable_but_this_channel_reenabled() -> None:
     assert _run(perms, member=1, channel=42) is True
 
 
+def test_single_channel_allow_without_sentinel_denies_other_channels() -> None:
+    """Реальные данные Discord: одна запись ``{канал: True}`` без sentinel'а
+    ``ALL_CHANNELS`` — это тоже белый список, не "разрешено везде плюс этот
+    канал". Discord прячет slash-команду везде, кроме перечисленных каналов,
+    даже без явного ``ALL_CHANNELS: False``."""
+    perms = CommandPerms(channel={42: True})
+    assert _run(perms, channel=42, default=True) is True
+    assert _run(perms, channel=99, default=True) is False
+
+
+def test_no_channel_overrides_at_all_does_not_restrict() -> None:
+    perms = CommandPerms(role={10: True})
+    assert _run(perms, channel=99, default=False) is False  # role/default решает, не канал
+    assert _run(perms, roles=frozenset({10}), channel=99, default=False) is True
+
+
 def test_user_allow_overrides_everything() -> None:
     perms = CommandPerms(user={1: True}, role={10: False})
     assert _run(perms, roles=frozenset({10}), member=1, default=False) is True

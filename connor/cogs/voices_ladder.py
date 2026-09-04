@@ -23,7 +23,7 @@ log = logging.getLogger(__name__)
 
 _EMPTY = "недельный ладдер комнат пуст"
 _TITLE = "Недельный ладдер комнат"
-_COMMENT = "Коннорыч недоумевает, почему он не в топе"
+_COMMENT = "Диего недоумевает, почему он не в топе"
 
 
 class VoicesLadder(commands.Cog):

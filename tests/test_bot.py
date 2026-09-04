@@ -30,9 +30,13 @@ def test_intents(bot: ConnorBot) -> None:
 
 
 def test_partial_member_cache(bot: ConnorBot) -> None:
+    # полный кэш неприемлем по памяти на больших гильдиях (сотни тысяч участников);
+    # вотчер anti.py поэтому не полагается на member cache — опрос audit log вместо
+    # on_member_update, см. connor/cogs/anti.py
     flags = bot._connection.member_cache_flags
     assert flags.voice is True
     assert flags.joined is False
+    assert bot._connection._chunk_guilds is False
 
 
 def test_safe_defaults(bot: ConnorBot) -> None:

@@ -80,12 +80,23 @@ def parse_guild_command_permissions(raw: list[dict], *, application_id: int) -> 
 
 
 def _channel_enabled(perms: CommandPerms, channel_id: int, guild_id: int) -> bool:
+    """Разрешена ли команда в этом канале по оверрайдам ``perms.channel``.
+
+    Пустой ``perms.channel`` (канал вообще не настраивался) — не участвует в
+    резолве, ``True``. Как только для команды задан **хотя бы один** channel-
+    оверрайд — Discord переключается в режим белого списка: любой канал, не
+    упомянутый явно (и не покрытый sentinel'ом "все каналы", ``guild_id - 1``),
+    считается **запрещённым**, а не разрешённым (проверено эмпирически: одна
+    запись ``{канал: True}`` без sentinel'а реально ограничивает и slash-путь
+    только этим каналом — так делает сам Discord, не только его UI)."""
+    if not perms.channel:
+        return True
     if channel_id in perms.channel:
         return perms.channel[channel_id]
     all_channels = guild_id - 1
     if all_channels in perms.channel:
         return perms.channel[all_channels]
-    return True
+    return False
 
 
 def _member_allowed(

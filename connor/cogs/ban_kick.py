@@ -24,6 +24,7 @@ from connor.core.hierarchy import (
     check_hierarchy,
     is_self_moderation,
 )
+from connor.core.members import fetch_member
 from connor.core.targets import parse_target_id
 from connor.core.texts import ERR_NO_TARGET, REASON_NOT_GIVEN, SELF_MODERATION
 from connor.logging_setup import log_action_error
@@ -102,7 +103,7 @@ class BanKick(commands.Cog):
             await ctx.send(ERR_NO_TARGET)
             return
 
-        member = guild.get_member(target_id)
+        member = await fetch_member(guild, target_id)
         if member is not None:
             # цель на сервере — обычные проверки
             if is_self_moderation(ctx.author.id, member.id):
@@ -155,7 +156,7 @@ class BanKick(commands.Cog):
         if target_id is None:
             await ctx.send(ERR_NO_TARGET)
             return
-        member = guild.get_member(target_id)
+        member = await fetch_member(guild, target_id)
         if member is None:
             await ctx.send(ERR_NO_TARGET)
             return

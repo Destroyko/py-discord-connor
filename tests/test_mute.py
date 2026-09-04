@@ -108,11 +108,19 @@ def _member(
 
 def _ctx(*, members: dict[int, SimpleNamespace]):
     role = SimpleNamespace(id=111)
+
+    async def fetch_member(i: int) -> SimpleNamespace:
+        member = members.get(i)
+        if member is None:
+            raise discord.NotFound(SimpleNamespace(status=404, reason="x"), "no")
+        return member
+
     guild = SimpleNamespace(
         name="Коннор",
         owner_id=999,
         get_member=lambda i: members.get(i),
         get_role=lambda _i: role,
+        fetch_member=fetch_member,
     )
     return SimpleNamespace(guild=guild, author=_member(1, pos=10), send=AsyncMock())
 
@@ -210,8 +218,15 @@ def _pending_bot(db: object, *, bot_komandy: object | None = None, fetch_user_ok
 
 
 def _pending_ctx(author_id: int = 1):
+    async def fetch_member(_i: int) -> SimpleNamespace:
+        raise discord.NotFound(SimpleNamespace(status=404, reason="x"), "no")
+
     guild = SimpleNamespace(
-        name="Коннор", owner_id=999, get_member=lambda _i: None, get_role=lambda _i: None
+        name="Коннор",
+        owner_id=999,
+        get_member=lambda _i: None,
+        get_role=lambda _i: None,
+        fetch_member=fetch_member,
     )
     return SimpleNamespace(guild=guild, author=_member(author_id, pos=10), send=AsyncMock())
 

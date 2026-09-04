@@ -15,6 +15,7 @@ from connor.cogs.voices_selfmod import (
     _ERR_NO_RIGHTS,
     _ERR_NO_USER,
     _ERR_NOT_BANNED,
+    _ERR_SELF,
     _VKICK_OK,
     _VRETURN_OK,
     VoicesSelfmod,
@@ -84,7 +85,7 @@ def _guild(*, room_channel: object, target: object) -> SimpleNamespace:
 
 
 def _ctx(guild: object, author: object) -> SimpleNamespace:
-    return SimpleNamespace(guild=guild, author=author, send=AsyncMock())
+    return SimpleNamespace(guild=guild, author=author, send=AsyncMock(), reply=AsyncMock())
 
 
 async def _vkick(cog: VoicesSelfmod, ctx: object, target: str) -> None:
@@ -102,8 +103,8 @@ async def test_vkick_rejected_when_not_owner(db: Database) -> None:
     author = _author(10, in_channel_id=None)
     ctx = _ctx(_guild(room_channel=None, target=None), author)
     await _vkick(VoicesSelfmod(_bot(db)), ctx, "20")
-    ctx.send.assert_awaited_once()
-    assert ctx.send.await_args.args[0] == _ERR_NO_RIGHTS
+    ctx.reply.assert_awaited_once()
+    assert ctx.reply.await_args.args[0] == _ERR_NO_RIGHTS
 
 
 async def test_vkick_rejected_when_owner_not_in_own_room(db: Database) -> None:
@@ -111,7 +112,7 @@ async def test_vkick_rejected_when_owner_not_in_own_room(db: Database) -> None:
     author = _author(10, in_channel_id=999)  # в другом войсе
     ctx = _ctx(_guild(room_channel=_room_channel(), target=None), author)
     await _vkick(VoicesSelfmod(_bot(db)), ctx, "20")
-    assert ctx.send.await_args.args[0] == _ERR_NO_RIGHTS
+    assert ctx.reply.await_args.args[0] == _ERR_NO_RIGHTS
 
 
 async def test_vkick_no_target(db: Database) -> None:
@@ -119,7 +120,17 @@ async def test_vkick_no_target(db: Database) -> None:
     author = _author(10, in_channel_id=_ROOM_ID)
     ctx = _ctx(_guild(room_channel=_room_channel(), target=None), author)
     await _vkick(VoicesSelfmod(_bot(db)), ctx, "мусор")
-    assert ctx.send.await_args.args[0] == _ERR_NO_USER
+    assert ctx.reply.await_args.args[0] == _ERR_NO_USER
+
+
+async def test_vkick_self_rejected(db: Database) -> None:
+    await RepoVoiceRooms(db).upsert(owner_id=10, channel_id=_ROOM_ID, created_at=1)
+    author = _author(10, in_channel_id=_ROOM_ID)
+    guild = _guild(room_channel=_room_channel(), target=None)
+    ctx = _ctx(guild, author)
+    await _vkick(VoicesSelfmod(_bot(db)), ctx, "10")
+    assert ctx.reply.await_args.args[0] == _ERR_SELF
+    guild.fetch_member.assert_not_awaited()  # себя не резолвим лишний раз
 
 
 async def test_vkick_target_not_on_server(db: Database) -> None:
@@ -129,7 +140,7 @@ async def test_vkick_target_not_on_server(db: Database) -> None:
     guild.fetch_member = AsyncMock(side_effect=discord.NotFound(MagicMock(status=404), "no"))
     ctx = _ctx(guild, author)
     await _vkick(VoicesSelfmod(_bot(db)), ctx, "20")
-    assert ctx.send.await_args.args[0] == _ERR_NO_USER
+    assert ctx.reply.await_args.args[0] == _ERR_NO_USER
 
 
 async def test_vkick_limit_reached_blocks_new_entry(db: Database) -> None:
@@ -143,7 +154,7 @@ async def test_vkick_limit_reached_blocks_new_entry(db: Database) -> None:
 
     await _vkick(VoicesSelfmod(_bot(db)), ctx, "20")
 
-    assert ctx.send.await_args.args[0] == _ERR_LIMIT
+    assert ctx.reply.await_args.args[0] == _ERR_LIMIT
     room.set_permissions.assert_not_awaited()
     assert await banlist.contains(10, 20) is False
 
@@ -160,7 +171,7 @@ async def test_vkick_already_banned_bypasses_limit(db: Database) -> None:
 
     await _vkick(VoicesSelfmod(_bot(db)), ctx, "20")
 
-    assert ctx.send.await_args.args[0] == _VKICK_OK.format(mention="<@20>")
+    assert ctx.reply.await_args.args[0] == _VKICK_OK.format(mention="<@20>")
     room.set_permissions.assert_awaited_once()
 
 
@@ -177,7 +188,7 @@ async def test_vkick_success_disconnects_when_in_room(db: Database) -> None:
     assert target.move_to.await_args.args == (None,)
     room.set_permissions.assert_awaited_once()
     assert await RepoVoiceBanlist(db).contains(10, 20) is True
-    assert ctx.send.await_args.args[0] == _VKICK_OK.format(mention="<@20>")
+    assert ctx.reply.await_args.args[0] == _VKICK_OK.format(mention="<@20>")
 
 
 async def test_vkick_success_no_disconnect_when_elsewhere(db: Database) -> None:
@@ -192,7 +203,7 @@ async def test_vkick_success_no_disconnect_when_elsewhere(db: Database) -> None:
     target.move_to.assert_not_awaited()  # не выгоняем из чужого канала
     room.set_permissions.assert_awaited_once()  # но overwrite ставим
     assert await RepoVoiceBanlist(db).contains(10, 20) is True
-    assert ctx.send.await_args.args[0] == _VKICK_OK.format(mention="<@20>")
+    assert ctx.reply.await_args.args[0] == _VKICK_OK.format(mention="<@20>")
 
 
 # --- /vreturn + !vdel ------------------------------------------------------------
@@ -202,7 +213,7 @@ async def test_vreturn_not_in_banlist(db: Database) -> None:
     author = _author(10, in_channel_id=None)
     ctx = _ctx(_guild(room_channel=None, target=None), author)
     await _vreturn(VoicesSelfmod(_bot(db)), ctx, "20")
-    assert ctx.send.await_args.args[0] == _ERR_NOT_BANNED
+    assert ctx.reply.await_args.args[0] == _ERR_NOT_BANNED
 
 
 async def test_vreturn_success_clears_room_deny(db: Database) -> None:
@@ -220,7 +231,7 @@ async def test_vreturn_success_clears_room_deny(db: Database) -> None:
     bot.http.delete_channel_permissions.assert_awaited_once()
     assert bot.http.delete_channel_permissions.await_args.args[:2] == (_ROOM_ID, 20)
     assert await RepoVoiceBanlist(db).contains(10, 20) is False
-    assert ctx.send.await_args.args[0] == _VRETURN_OK.format(mention="<@20>")
+    assert ctx.reply.await_args.args[0] == _VRETURN_OK.format(mention="<@20>")
 
 
 async def test_vreturn_success_without_active_room(db: Database) -> None:
@@ -231,7 +242,7 @@ async def test_vreturn_success_without_active_room(db: Database) -> None:
     await _vreturn(VoicesSelfmod(bot), ctx, "20")
 
     bot.http.delete_channel_permissions.assert_not_awaited()
-    assert ctx.send.await_args.args[0] == _VRETURN_OK.format(mention="<@20>")
+    assert ctx.reply.await_args.args[0] == _VRETURN_OK.format(mention="<@20>")
 
 
 async def test_vdel_ignored_in_guild(db: Database) -> None:
@@ -261,7 +272,8 @@ def test_banlist_embed_structure() -> None:
     embed = embeds[0]
     assert embed.title == "Список забаненных"
     assert embed.colour == discord.Color.blue()
-    assert "`<@111>`" in embed.description
+    assert "<@111>" in embed.description
+    assert "`<@111>`" not in embed.description  # без code-разметки — кликабельно
     assert "id: 111" in embed.description
     assert "**1**" in embed.description and "**2**" in embed.description
     assert embed.footer.text == "Например !vdel 1234567891011"

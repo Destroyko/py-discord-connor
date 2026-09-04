@@ -101,16 +101,24 @@ def build_review_message(
 
 
 def build_audit_embed(
-    *, mod_name: str, mod_icon: str | None, target_mention: str, approved: bool
+    *,
+    mod_id: int,
+    mod_name: str,
+    mod_icon: str | None,
+    target_mention: str,
+    target_avatar_url: str | None,
+    role_mention: str,
+    approved: bool,
 ) -> discord.Embed:
     if approved:
         colour, verb, title = discord.Color.green(), "обновил", "Выдана роль"
     else:
         colour, verb, title = discord.Color.red(), "отказал", "Отказ в выдаче роли"
-    embed = discord.Embed(
-        colour=colour, description=f"{mod_name} {verb} {target_mention}\n{title}\n@Работяга"
-    )
+    embed = discord.Embed(colour=colour, description=f"<@{mod_id}> {verb} {target_mention}")
+    embed.add_field(name=title, value=role_mention, inline=False)
     embed.set_author(name=mod_name, icon_url=mod_icon)
+    if target_avatar_url:
+        embed.set_thumbnail(url=target_avatar_url)
     return embed
 
 
@@ -235,7 +243,7 @@ class RoleGiver(commands.Cog):
                 allowed_mentions=discord.AllowedMentions(users=True),
             )
 
-        await self._audit(guild, payload, member.mention, approved=approved)
+        await self._audit(guild, payload, member, approved=approved)
 
     async def _delete_review_msg(self, channel_id: int, message_id: int) -> None:
         channel = self.bot.get_channel(channel_id)
@@ -250,7 +258,7 @@ class RoleGiver(commands.Cog):
         self,
         guild: discord.Guild,
         payload: discord.RawReactionActionEvent,
-        target_mention: str,
+        target: discord.Member,
         *,
         approved: bool,
     ) -> None:
@@ -263,11 +271,15 @@ class RoleGiver(commands.Cog):
                 mod = await guild.fetch_member(payload.user_id)
             except discord.NotFound:
                 return
+        role = self._rabotyaga(guild)
         await audit.send(
             embed=build_audit_embed(
+                mod_id=mod.id,
                 mod_name=embed_author_name(mod),
                 mod_icon=embed_author_icon(mod),
-                target_mention=target_mention,
+                target_mention=target.mention,
+                target_avatar_url=target.display_avatar.url,
+                role_mention=role.mention if role is not None else "Работяга",
                 approved=approved,
             )
         )

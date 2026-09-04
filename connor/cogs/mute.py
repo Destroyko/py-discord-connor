@@ -33,6 +33,7 @@ from connor.core.hierarchy import (
     check_hierarchy,
     is_self_moderation,
 )
+from connor.core.members import fetch_member
 from connor.core.msg_guard import should_process_message
 from connor.core.mute_state import MuteState
 from connor.core.resolve import EntityResolver
@@ -224,7 +225,7 @@ class Mute(commands.Cog):
             await ctx.send(_ERR_BAD_TIME)
             return
 
-        member = guild.get_member(target_id)
+        member = await fetch_member(guild, target_id)
         if member is None:
             # цель уже вышла с сервера — Discord timeout ей не выдать; кладём в
             # очередь и применим при возвращении (см. mute.md § "Отложенный мут")
@@ -453,7 +454,7 @@ class Mute(commands.Cog):
         if target_id is None:
             await ctx.send(ERR_NO_TARGET)
             return
-        member = guild.get_member(target_id)
+        member = await fetch_member(guild, target_id)
         if member is None:
             # цели нет на сервере — но на неё мог висеть отложенный мут: отменяем его
             if await self.pending_repo.remove(target_id):

@@ -38,7 +38,7 @@ def _predlozhka(*, can_write: bool) -> SimpleNamespace:
 
 def _check_ctx(member_id: int, predlozhka: object):
     guild = SimpleNamespace(get_channel=lambda _i: predlozhka)
-    return SimpleNamespace(guild=guild, author=_member(member_id), send=AsyncMock())
+    return SimpleNamespace(guild=guild, author=_member(member_id), reply=AsyncMock())
 
 
 async def _run_check(cog: Check, ctx: object) -> None:
@@ -48,20 +48,20 @@ async def _run_check(cog: Check, ctx: object) -> None:
 async def test_check_open_when_access_and_not_anti(db: Database) -> None:
     ctx = _check_ctx(10, _predlozhka(can_write=True))
     await _run_check(_cog(db), ctx)
-    ctx.send.assert_awaited_once_with("Доступ открыт")
+    ctx.reply.assert_awaited_once_with("Доступ открыт")
 
 
 async def test_check_denied_without_access(db: Database) -> None:
     ctx = _check_ctx(10, _predlozhka(can_write=False))
     await _run_check(_cog(db), ctx)
-    ctx.send.assert_awaited_once_with("Недостаточно прав")
+    ctx.reply.assert_awaited_once_with("Недостаточно прав")
 
 
 async def test_check_denied_when_anti_even_with_access(db: Database) -> None:
     await RepoAnti(db).add(10, added_at=1, added_by=1)
     ctx = _check_ctx(10, _predlozhka(can_write=True))
     await _run_check(_cog(db), ctx)
-    ctx.send.assert_awaited_once_with("Недостаточно прав")
+    ctx.reply.assert_awaited_once_with("Недостаточно прав")
 
 
 async def test_check_reconciles_stale_overwrite(db: Database) -> None:
@@ -73,13 +73,13 @@ async def test_check_reconciles_stale_overwrite(db: Database) -> None:
 
     predlozhka.set_permissions.assert_awaited_once()  # clear_deny сработал
     assert await RepoPredlozhka(db).contains(10) is False
-    ctx.send.assert_awaited_once_with("Доступ открыт")
+    ctx.reply.assert_awaited_once_with("Доступ открыт")
 
 
 async def test_check_no_predlozhka_channel_denies(db: Database) -> None:
     ctx = _check_ctx(10, None)
     await _run_check(_cog(db), ctx)
-    ctx.send.assert_awaited_once_with("Недостаточно прав")
+    ctx.reply.assert_awaited_once_with("Недостаточно прав")
 
 
 # --- ленивый deny -------------------------------------------------------------

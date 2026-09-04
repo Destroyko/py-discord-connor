@@ -115,17 +115,36 @@ def test_review_message_d_line() -> None:
 
 
 def test_audit_embed_approved() -> None:
-    e = build_audit_embed(mod_name="mod", mod_icon=None, target_mention="<@5>", approved=True)
+    e = build_audit_embed(
+        mod_id=9,
+        mod_name="mod",
+        mod_icon=None,
+        target_mention="<@5>",
+        target_avatar_url="https://example.com/a.png",
+        role_mention="<@&7>",
+        approved=True,
+    )
     assert e.colour == discord.Color.green()
-    assert "mod обновил <@5>" in e.description
-    assert "Выдана роль" in e.description
+    assert e.description == "<@9> обновил <@5>"
+    assert e.fields[0].name == "Выдана роль"
+    assert e.fields[0].value == "<@&7>"
+    assert e.thumbnail.url == "https://example.com/a.png"
 
 
 def test_audit_embed_refused() -> None:
-    e = build_audit_embed(mod_name="mod", mod_icon=None, target_mention="<@5>", approved=False)
+    e = build_audit_embed(
+        mod_id=9,
+        mod_name="mod",
+        mod_icon=None,
+        target_mention="<@5>",
+        target_avatar_url=None,
+        role_mention="<@&7>",
+        approved=False,
+    )
     assert e.colour == discord.Color.red()
-    assert "mod отказал <@5>" in e.description
-    assert "Отказ в выдаче роли" in e.description
+    assert e.description == "<@9> отказал <@5>"
+    assert e.fields[0].name == "Отказ в выдаче роли"
+    assert e.thumbnail.url is None
 
 
 # --- /give сценарии (реальная БД, фейки Discord) -----------------------------

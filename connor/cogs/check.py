@@ -55,7 +55,7 @@ class Check(commands.Cog):
         is_anti = await self.anti_repo.contains(member.id)
         predlozhka = self._predlozhka(guild)
         if predlozhka is None:
-            await ctx.send(_ACCESS_DENIED)
+            await ctx.reply(_ACCESS_DENIED)
             return
 
         # реконсиляция: бот-овый deny висит, а анти-статуса уже нет — снять
@@ -63,7 +63,7 @@ class Check(commands.Cog):
             await clear_deny(predlozhka, member, self.pred_repo)
 
         has_access = predlozhka.permissions_for(member).send_messages
-        await ctx.send(_ACCESS_OPEN if (has_access and not is_anti) else _ACCESS_DENIED)
+        await ctx.reply(_ACCESS_OPEN if (has_access and not is_anti) else _ACCESS_DENIED)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:

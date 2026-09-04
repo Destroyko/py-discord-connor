@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import discord
 import pytest
 
 from connor.cogs.purge import (
     MsgView,
+    Purge,
     PurgeError,
     PurgeSpec,
     build_purge_log_embed,
@@ -115,12 +119,75 @@ def test_match_links_images_text() -> None:
 
 def test_build_purge_log_embed() -> None:
     embed = build_purge_log_embed(
-        author_username=".destroyko",
+        author_username="mod_username",
         author_icon="http://a",
-        nick_text="enteii",
+        mention="<@5>",
         raw_args="text 1",
         channel="#флудиславль",
     )
-    assert embed.author.name == ".destroyko"  # username, не серверный ник
-    assert embed.description == "enteii использовал :pudge: text 1 в канале #флудиславль"
+    assert embed.author.name == "mod_username"  # username, не серверный ник
+    assert embed.description == "<@5> использовал :pudge: text 1 в канале #флудиславль"
     assert isinstance(embed, discord.Embed)
+
+
+# --- Purge.purge (cog, фейковый Discord) --------------------------------------------
+
+
+async def _history(*_a: object, **_kw: object):
+    return
+    yield  # pragma: no cover — пустая история, async generator
+
+
+def _cog_and_ctx(*, bot_komandy: object | None = None) -> tuple[Purge, SimpleNamespace]:
+    config = SimpleNamespace(
+        categories={"RODDOM": 999},
+        channels={"BOT_KOMANDY": 111},
+        purge=SimpleNamespace(soft_limit=300),
+    )
+    bot = SimpleNamespace(config=config, get_channel=lambda _cid: bot_komandy)
+    cog = Purge(bot)  # type: ignore[arg-type]
+
+    channel = SimpleNamespace(
+        category_id=1,  # не «роддом»
+        permissions_for=lambda _m: SimpleNamespace(manage_messages=True),
+        history=_history,
+        delete_messages=AsyncMock(),
+        mention="#канал",
+    )
+    ctx = SimpleNamespace(
+        channel=channel,
+        author=SimpleNamespace(
+            id=5,
+            mention="<@5>",
+            display_name="enteii",
+            name="enteii",
+            avatar=None,
+            display_avatar=SimpleNamespace(url="http://a"),
+        ),
+        message=SimpleNamespace(delete=AsyncMock()),
+        send=AsyncMock(),
+    )
+    return cog, ctx
+
+
+async def test_purge_deletes_invocation_message() -> None:
+    cog, ctx = _cog_and_ctx()
+    await Purge.purge.callback(cog, ctx, "5")
+    ctx.message.delete.assert_awaited_once()
+    ctx.send.assert_awaited_once_with(":pudge:")
+
+
+async def test_purge_logs_clickable_mention_in_bot_komandy() -> None:
+    bot_komandy = SimpleNamespace(send=AsyncMock())
+    cog, ctx = _cog_and_ctx(bot_komandy=bot_komandy)
+    await Purge.purge.callback(cog, ctx, "5")
+
+    bot_komandy.send.assert_awaited_once()
+    embed = bot_komandy.send.await_args.kwargs["embed"]
+    assert embed.description == "<@5> использовал :pudge: 5 в канале #канал"
+
+
+async def test_purge_parse_error_does_not_delete_invocation_message() -> None:
+    cog, ctx = _cog_and_ctx()
+    await Purge.purge.callback(cog, ctx, "not-a-number")
+    ctx.message.delete.assert_not_awaited()

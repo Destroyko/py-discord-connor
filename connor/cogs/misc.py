@@ -15,7 +15,7 @@ from discord.ext import commands
 if TYPE_CHECKING:
     from connor.bot import ConnorBot
 
-_KISS_REPLY = "Дядь, ты дурак?"
+_KISS_REPLY = "Не забрасывай тренировки"
 _KISS_COOLDOWN_SECONDS = 5 * 60
 
 
