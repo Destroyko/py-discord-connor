@@ -9,6 +9,7 @@ import discord
 
 from connor.cogs.anti import (
     _ERR_ALREADY,
+    _ERR_HIERARCHY,
     _ERR_NOT_IN_LIST,
     _ROLE_REMOVE_FAILED,
     _ROLE_RETURN_FAILED,
@@ -18,7 +19,7 @@ from connor.cogs.anti import (
     build_role_removed_embed,
     build_role_returned_embed,
 )
-from connor.core.texts import ERR_NO_TARGET
+from connor.core.texts import ERR_NO_TARGET, SELF_MODERATION
 from connor.db import Database
 from connor.db.repo_anti import RepoAnti
 from connor.db.repo_anti_watcher import RepoAntiWatcher
@@ -77,10 +78,14 @@ def test_build_role_returned_embed() -> None:
 # --- /add, /del flow (real DB, fake Discord) -----------------------------------
 
 
-def _member(mid: int, *, roles: list[object] | None = None) -> SimpleNamespace:
+def _member(
+    mid: int, *, roles: list[object] | None = None, pos: int = 1, bot: bool = False
+) -> SimpleNamespace:
     return SimpleNamespace(
         id=mid,
+        bot=bot,
         roles=roles if roles is not None else [],
+        top_role=SimpleNamespace(position=pos),
         remove_roles=AsyncMock(),
         add_roles=AsyncMock(),
         display_avatar=SimpleNamespace(url=f"http://avatar/{mid}"),
@@ -106,7 +111,14 @@ def _cog(db: Database, *, user_exists: bool = True) -> Anti:
     return Anti(bot)  # type: ignore[arg-type]
 
 
-def _ctx(*, members: dict[int, SimpleNamespace], role: object = None, predlozhka: object = None):
+def _ctx(
+    *,
+    members: dict[int, SimpleNamespace],
+    role: object = None,
+    predlozhka: object = None,
+    owner_id: int = 999,
+    author_pos: int = 10,
+):
     async def fetch_member(i: int) -> SimpleNamespace:
         member = members.get(i)
         if member is None:
@@ -114,12 +126,18 @@ def _ctx(*, members: dict[int, SimpleNamespace], role: object = None, predlozhka
         return member
 
     guild = SimpleNamespace(
+        owner_id=owner_id,
         get_member=lambda i: members.get(i),
         get_role=lambda _i: role,
         get_channel=lambda _i: predlozhka,
         fetch_member=fetch_member,
     )
-    author = SimpleNamespace(id=1, name="mod1", display_avatar=SimpleNamespace(url="http://mod"))
+    author = SimpleNamespace(
+        id=1,
+        name="mod1",
+        top_role=SimpleNamespace(position=author_pos),
+        display_avatar=SimpleNamespace(url="http://mod"),
+    )
     return SimpleNamespace(guild=guild, author=author, send=AsyncMock())
 
 
@@ -148,6 +166,46 @@ async def test_add_already_in_list(db: Database) -> None:
     ctx = _ctx(members={})
     await _add(_cog(db), ctx, "50")
     ctx.send.assert_awaited_once_with(_ERR_ALREADY.format(mention="<@50>"))
+
+
+async def test_add_self_moderation(db: Database) -> None:
+    ctx = _ctx(members={1: _member(1, pos=10)})
+    await _add(_cog(db), ctx, "1")
+    ctx.send.assert_awaited_once_with(SELF_MODERATION)
+    assert await RepoAnti(db).contains(1) is False
+
+
+async def test_add_hierarchy_higher_role(db: Database) -> None:
+    ctx = _ctx(members={50: _member(50, pos=20)})  # выше автора (pos=10)
+    await _add(_cog(db), ctx, "50")
+    ctx.send.assert_awaited_once_with(_ERR_HIERARCHY)
+    assert await RepoAnti(db).contains(50) is False
+
+
+async def test_add_hierarchy_equal_role(db: Database) -> None:
+    ctx = _ctx(members={50: _member(50, pos=10)}, author_pos=10)  # равные позиции
+    await _add(_cog(db), ctx, "50")
+    ctx.send.assert_awaited_once_with(_ERR_HIERARCHY)
+
+
+async def test_add_hierarchy_target_is_bot(db: Database) -> None:
+    ctx = _ctx(members={50: _member(50, pos=1, bot=True)})
+    await _add(_cog(db), ctx, "50")
+    ctx.send.assert_awaited_once_with(_ERR_HIERARCHY)
+
+
+async def test_add_hierarchy_target_is_owner(db: Database) -> None:
+    ctx = _ctx(members={50: _member(50, pos=1)}, owner_id=50)
+    await _add(_cog(db), ctx, "50")
+    ctx.send.assert_awaited_once_with(_ERR_HIERARCHY)
+
+
+async def test_add_hierarchy_skipped_when_member_absent(db: Database) -> None:
+    # цели нет на сервере — иерархию проверить нечем, но добавление в список
+    # (не требующее членства, см. anti.md) всё равно должно пройти
+    ctx = _ctx(members={})
+    await _add(_cog(db), ctx, "50")
+    assert await RepoAnti(db).contains(50) is True
 
 
 async def test_add_success_removes_role(db: Database) -> None:

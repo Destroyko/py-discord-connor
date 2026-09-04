@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 from time import monotonic
 from typing import TYPE_CHECKING
 
@@ -40,6 +40,7 @@ from connor.core.resolve import EntityResolver
 from connor.core.targets import parse_target_id
 from connor.core.texts import ERR_NO_TARGET, ERR_TARGET_ABSENT, REASON_NOT_GIVEN, SELF_MODERATION
 from connor.core.timefmt import fmt_full, format_remaining_coarse, parse_mute_duration
+from connor.db.repo_mute_watcher import RepoMuteWatcher
 from connor.db.repo_pending_mute import RepoPendingMute
 from connor.logging_setup import log_action_error
 
@@ -59,6 +60,10 @@ _PENDING_QUEUED = (
 _PENDING_CANCELLED = "Отложенный мут для {mention} отменён"
 
 _PENDING_SWEEP_INTERVAL_HOURS = 1
+
+# см. anti.py: журнал аудита появляется в API не сразу (~4-5 c) — это и есть
+# реальный потолок задержки, не интервал опроса; опрашивать чаще бессмысленно
+_MANUAL_POLL_INTERVAL_SECONDS = 3
 
 _APPEAL = (
     "Для обжалования вы можете обратиться к старшим модераторам или супермодераторам, "
@@ -108,6 +113,14 @@ def build_mute_channel_embed(
     return embed
 
 
+def build_unmute_channel_embed(
+    *, mod_name: str, mod_icon: str | None, mention: str
+) -> discord.Embed:
+    embed = discord.Embed(description=f"{mention} размьючен", colour=discord.Color.green())
+    embed.set_author(name=mod_name, icon_url=mod_icon)
+    return embed
+
+
 def build_pending_mute_embed(*, until_ts: int) -> discord.Embed:
     """Ответ модератору, когда цель уже вышла с сервера и мут поставлен в очередь.
     Синяя полоса слева, без author-иконки."""
@@ -135,14 +148,17 @@ class Mute(commands.Cog):
         self.bot = bot
         self.state = MuteState()
         self.pending_repo = RepoPendingMute(bot.db)
+        self.watcher_repo = RepoMuteWatcher(bot.db)
         self._resolver = EntityResolver(log)  # реконсиляция дёргается часто — лог 1 раз на id
         self._pending_startup_done = False
 
     async def cog_load(self) -> None:
         self._sweep_pending.start()
+        self._poll_manual_changes.start()
 
     async def cog_unload(self) -> None:
         self._sweep_pending.cancel()
+        self._poll_manual_changes.cancel()
 
     # -- helpers --------------------------------------------------------------
 
@@ -440,6 +456,125 @@ class Mute(commands.Cog):
     async def _on_sweep_error(self, exc: BaseException) -> None:
         log.exception("sweep отложенных мутов: ошибка вне тела итерации", exc_info=exc)
 
+    # -- наблюдение за ручными изменениями Discord timeout (опрос audit log) -----
+    #
+    # По аналогии с anti.py: gateway-событие on_member_update discord.py диспатчит
+    # только участникам, уже сидящим в member-кэше (у нас он частичный), поэтому
+    # мут/анмут, наложенные модератором напрямую через Discord UI (в обход
+    # /mute и /unmute), отслеживаются периодическим опросом журнала аудита.
+
+    @tasks.loop(seconds=_MANUAL_POLL_INTERVAL_SECONDS)
+    async def _poll_manual_changes(self) -> None:
+        try:
+            guild = self.bot.get_guild(self.bot.config.guild_id)
+            if guild is None:
+                return
+            await self._poll_manual_once(guild)
+        except Exception:
+            log.exception("вотчер мута: сбой опроса audit log — цикл продолжается")
+
+    @_poll_manual_changes.before_loop
+    async def _before_poll_manual(self) -> None:
+        await self.bot.wait_until_ready()
+
+    @_poll_manual_changes.error
+    async def _on_poll_manual_error(self, exc: BaseException) -> None:
+        log.exception("вотчер мута: ошибка вне тела итерации", exc_info=exc)
+
+    async def _poll_manual_once(self, guild: discord.Guild) -> None:
+        cursor = await self.watcher_repo.get_cursor()
+
+        if cursor is None:
+            # первый чистый старт — не разбираем всю историю аудита, только
+            # фиксируем точку отсчёта на «сейчас» (тот же принцип, что у anti.py)
+            newest_id = await self._latest_entry_id(guild)
+            if newest_id is not None:
+                await self.watcher_repo.set_cursor(newest_id)
+            return
+
+        async for entry in guild.audit_logs(
+            action=discord.AuditLogAction.member_update,
+            after=discord.Object(id=cursor),
+            oldest_first=True,
+            limit=None,
+        ):
+            try:
+                await self._handle_manual_entry(entry)
+            except Exception:
+                log.exception("вотчер мута: сбой обработки записи %d", entry.id)
+            await self.watcher_repo.set_cursor(entry.id)
+
+    async def _latest_entry_id(self, guild: discord.Guild) -> int | None:
+        async for entry in guild.audit_logs(limit=1):
+            return entry.id
+        return None
+
+    async def _handle_manual_entry(self, entry: discord.AuditLogEntry) -> None:
+        if self.bot.user is not None and entry.user_id == self.bot.user.id:
+            return  # таймаут поставил/снял сам бот (/mute, /unmute, отложенный мут) — уже отчитался
+
+        target = entry.target
+        if target is None:
+            return
+        actor = entry.user
+        if actor is None:
+            log.warning(
+                "вотчер мута: не нашёл автора изменения у записи %d (цель %d)",
+                entry.id,
+                target.id,
+            )
+            return
+
+        before_until = getattr(entry.before, "timed_out_until", None)
+        after_until = getattr(entry.after, "timed_out_until", None)
+
+        if before_until is None and after_until is not None:
+            await self._on_manual_mute(
+                target=target, actor=actor, until=after_until, reason=entry.reason
+            )
+        elif before_until is not None and after_until is None:
+            await self._on_manual_unmute(target=target, actor=actor)
+
+    async def _on_manual_mute(
+        self,
+        *,
+        target: discord.Member | discord.User | discord.Object,
+        actor: discord.User | discord.Member,
+        until: datetime,
+        reason: str | None,
+    ) -> None:
+        channel = self._bot_komandy()
+        if channel is None:
+            return
+        remaining = int((until - utcnow()).total_seconds())
+        await channel.send(
+            embed=build_mute_channel_embed(
+                mod_name=embed_author_name(actor),
+                mod_icon=embed_author_icon(actor),
+                mention=f"<@{target.id}>",
+                time_str=format_remaining_coarse(remaining),
+                reason=reason or REASON_NOT_GIVEN,
+                updated=False,
+            )
+        )
+
+    async def _on_manual_unmute(
+        self,
+        *,
+        target: discord.Member | discord.User | discord.Object,
+        actor: discord.User | discord.Member,
+    ) -> None:
+        channel = self._bot_komandy()
+        if channel is None:
+            return
+        await channel.send(
+            embed=build_unmute_channel_embed(
+                mod_name=embed_author_name(actor),
+                mod_icon=embed_author_icon(actor),
+                mention=f"<@{target.id}>",
+            )
+        )
+
     # -- /unmute -------------------------------------------------------------------
 
     @commands.hybrid_command(name="unmute", description="Снять мут")
@@ -485,10 +620,10 @@ class Mute(commands.Cog):
         self.state.end(member.id)
         await self._send_plain_dm(member, f'Ограничения на сервере "{guild.name}" сняты')
         await ctx.send(
-            embed=discord.Embed(
-                description=f"{member.mention} размьючен", colour=discord.Color.green()
-            ).set_author(
-                name=embed_author_name(ctx.author), icon_url=embed_author_icon(ctx.author)
+            embed=build_unmute_channel_embed(
+                mod_name=embed_author_name(ctx.author),
+                mod_icon=embed_author_icon(ctx.author),
+                mention=member.mention,
             )
         )
 

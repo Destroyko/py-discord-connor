@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import discord
+from discord.utils import utcnow
 
 from connor.cogs.mute import (
     _ERR_ALREADY_MUTED,
@@ -16,6 +18,7 @@ from connor.cogs.mute import (
     build_mute_channel_embed,
     build_mute_dm_embed,
     build_pending_mute_embed,
+    build_unmute_channel_embed,
 )
 from connor.core.texts import (
     ERR_NO_TARGET,
@@ -23,6 +26,7 @@ from connor.core.texts import (
     REASON_NOT_GIVEN,
     SELF_MODERATION,
 )
+from connor.db.repo_mute_watcher import RepoMuteWatcher
 from connor.db.repo_pending_mute import RepoPendingMute
 
 # --- pure builders -------------------------------------------------------------
@@ -71,6 +75,15 @@ def test_channel_embed_first_and_update() -> None:
     )
     assert upd.colour == discord.Color.yellow()
     assert upd.description == "<@5> перемьючен с 10ч на 48h"
+
+
+def test_unmute_channel_embed() -> None:
+    e = build_unmute_channel_embed(mod_name="mod", mod_icon="http://icon", mention="<@5>")
+    assert e.colour == discord.Color.green()
+    assert e.description == "<@5> размьючен"
+    assert e.author.name == "mod"
+    assert e.author.icon_url == "http://icon"
+    assert e.fields == []  # у /unmute нет параметра причины
 
 
 # --- /mute branch ordering ----------------------------------------------------
@@ -410,3 +423,175 @@ async def test_pending_applied_on_startup_if_member_returned_during_downtime(db)
     member.timeout.assert_awaited_once()
     assert await RepoPendingMute(db).get(5) is None
     assert cog._pending_startup_done is True
+
+
+# --- вотчер: ручные изменения Discord timeout через UI (опрос audit log) -------
+
+_BOT_ID = 999
+
+
+async def _audit_iter(entries: list[object]):
+    for entry in entries:
+        yield entry
+
+
+def _watch_entry(
+    *,
+    entry_id: int,
+    target_id: int,
+    actor_id: int | None,
+    before_until: object = None,
+    after_until: object = None,
+    reason: str | None = None,
+) -> SimpleNamespace:
+    user = (
+        None
+        if actor_id is None
+        else SimpleNamespace(
+            id=actor_id, name=f"mod{actor_id}", display_avatar=SimpleNamespace(url="u")
+        )
+    )
+    return SimpleNamespace(
+        id=entry_id,
+        user_id=actor_id,
+        user=user,
+        target=SimpleNamespace(id=target_id),
+        before=SimpleNamespace(timed_out_until=before_until),
+        after=SimpleNamespace(timed_out_until=after_until),
+        reason=reason,
+    )
+
+
+def _watch_guild(*, entries: list[object], latest: list[object] = ()):
+    def audit_logs(**kw):
+        if kw.get("limit") == 1 and "action" not in kw:
+            return _audit_iter(list(latest))
+        return _audit_iter(entries)
+
+    return SimpleNamespace(audit_logs=audit_logs)
+
+
+def _watch_bot(db: object, *, bot_komandy: object | None = None) -> SimpleNamespace:
+    return SimpleNamespace(
+        config=_config(),
+        db=db,
+        user=SimpleNamespace(id=_BOT_ID),
+        get_channel=lambda cid: bot_komandy if cid == 222 else None,
+    )
+
+
+async def _poll_manual(cog: Mute, guild: object) -> None:
+    await Mute._poll_manual_once(cog, guild)
+
+
+async def test_manual_poll_first_run_seeds_cursor_without_processing(db) -> None:
+    channel = SimpleNamespace(send=AsyncMock())
+    latest = [_watch_entry(entry_id=42, target_id=5, actor_id=7, after_until="x")]
+    cog = Mute(_watch_bot(db, bot_komandy=channel))  # type: ignore[arg-type]
+    g = _watch_guild(entries=[], latest=latest)
+
+    await _poll_manual(cog, g)
+
+    channel.send.assert_not_awaited()
+    assert await RepoMuteWatcher(db).get_cursor() == 42
+
+
+async def test_manual_poll_first_run_no_history_leaves_cursor_unset(db) -> None:
+    cog = Mute(_watch_bot(db))  # type: ignore[arg-type]
+    g = _watch_guild(entries=[], latest=[])
+
+    await _poll_manual(cog, g)
+
+    assert await RepoMuteWatcher(db).get_cursor() is None
+
+
+async def test_manual_poll_ignores_unrelated_member_update(db) -> None:
+    await RepoMuteWatcher(db).set_cursor(1)
+    channel = SimpleNamespace(send=AsyncMock())
+    cog = Mute(_watch_bot(db, bot_komandy=channel))  # type: ignore[arg-type]
+    # запись member_update без изменения timed_out_until (например, смена ника)
+    entry = _watch_entry(entry_id=2, target_id=5, actor_id=7)
+    g = _watch_guild(entries=[entry])
+
+    await _poll_manual(cog, g)
+
+    channel.send.assert_not_awaited()
+    assert await RepoMuteWatcher(db).get_cursor() == 2  # курсор всё равно двигается
+
+
+async def test_manual_mute_via_ui_posts_embed(db) -> None:
+    await RepoMuteWatcher(db).set_cursor(1)
+    channel = SimpleNamespace(send=AsyncMock())
+    cog = Mute(_watch_bot(db, bot_komandy=channel))  # type: ignore[arg-type]
+    until = utcnow() + timedelta(hours=2, minutes=30)
+    entry = _watch_entry(entry_id=2, target_id=5, actor_id=7, after_until=until, reason="п11")
+    g = _watch_guild(entries=[entry])
+
+    await _poll_manual(cog, g)
+
+    channel.send.assert_awaited_once()
+    embed = channel.send.await_args.kwargs["embed"]
+    assert embed.description == "<@5> замьючен на 2ч"
+    assert embed.fields[0].value == "п11"
+    assert embed.author.name == "mod7"
+    assert embed.colour == discord.Color.green()
+
+
+async def test_manual_mute_via_ui_default_reason(db) -> None:
+    await RepoMuteWatcher(db).set_cursor(1)
+    channel = SimpleNamespace(send=AsyncMock())
+    cog = Mute(_watch_bot(db, bot_komandy=channel))  # type: ignore[arg-type]
+    until = utcnow() + timedelta(hours=1)
+    entry = _watch_entry(entry_id=2, target_id=5, actor_id=7, after_until=until)
+    g = _watch_guild(entries=[entry])
+
+    await _poll_manual(cog, g)
+
+    embed = channel.send.await_args.kwargs["embed"]
+    assert embed.fields[0].value == REASON_NOT_GIVEN
+
+
+async def test_manual_unmute_via_ui_posts_embed(db) -> None:
+    await RepoMuteWatcher(db).set_cursor(1)
+    channel = SimpleNamespace(send=AsyncMock())
+    cog = Mute(_watch_bot(db, bot_komandy=channel))  # type: ignore[arg-type]
+    entry = _watch_entry(entry_id=2, target_id=5, actor_id=7, before_until=utcnow())
+    g = _watch_guild(entries=[entry])
+
+    await _poll_manual(cog, g)
+
+    channel.send.assert_awaited_once()
+    embed = channel.send.await_args.kwargs["embed"]
+    assert embed.description == "<@5> размьючен"
+    assert embed.author.name == "mod7"
+    assert embed.colour == discord.Color.green()
+
+
+async def test_manual_poll_ignores_change_by_bot(db) -> None:
+    await RepoMuteWatcher(db).set_cursor(1)
+    channel = SimpleNamespace(send=AsyncMock())
+    cog = Mute(_watch_bot(db, bot_komandy=channel))  # type: ignore[arg-type]
+    entry = _watch_entry(
+        entry_id=2, target_id=5, actor_id=_BOT_ID, after_until=utcnow() + timedelta(hours=1)
+    )
+    g = _watch_guild(entries=[entry])
+
+    await _poll_manual(cog, g)
+
+    channel.send.assert_not_awaited()
+    assert await RepoMuteWatcher(db).get_cursor() == 2  # запись просмотрена, курсор двигается
+
+
+async def test_manual_poll_actor_not_found_logs_and_skips(db) -> None:
+    await RepoMuteWatcher(db).set_cursor(1)
+    channel = SimpleNamespace(send=AsyncMock())
+    cog = Mute(_watch_bot(db, bot_komandy=channel))  # type: ignore[arg-type]
+    entry = _watch_entry(
+        entry_id=2, target_id=5, actor_id=None, after_until=utcnow() + timedelta(hours=1)
+    )
+    g = _watch_guild(entries=[entry])
+
+    await _poll_manual(cog, g)
+
+    channel.send.assert_not_awaited()
+    assert await RepoMuteWatcher(db).get_cursor() == 2

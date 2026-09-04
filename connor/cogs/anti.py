@@ -3,6 +3,12 @@
 ``/add`` / ``/del`` (+``!``): добавить/убрать из анти-списка, изъять/вернуть роль
 «работяга», при необходимости поставить/снять точечный запрет писать в «предложку».
 
+``/add`` — как и ``/mute``/``/ban``/``/kick`` (см. ``rules.md`` § "Роли и права") —
+отказывает на самомодерации (цель = сам инициатор) и на иерархии (цель — роль
+выше/равная инициатору, либо цель — бот); проверка иерархии пропускается, если
+цели уже нет на сервере (её роли неизвестны — как и у ``/ban`` на покинувшего).
+``/del`` этим проверкам не подчиняется — это снятие ограничения, не наказание.
+
 Наблюдение за ручными изменениями роли: периодический опрос журнала аудита (не
 gateway-событие ``on_member_update`` — оно диспатчится discord.py, только если
 участник уже в member-кэше; на частичном кэше это почти никогда не срабатывало,
@@ -24,10 +30,16 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from connor.core.authorship import embed_author_icon, embed_author_name
+from connor.core.hierarchy import (
+    HierarchyBlock,
+    HierarchyInput,
+    check_hierarchy,
+    is_self_moderation,
+)
 from connor.core.members import fetch_member
 from connor.core.resolve import EntityResolver
 from connor.core.targets import parse_target_id
-from connor.core.texts import ERR_NO_TARGET, REASON_NOT_GIVEN
+from connor.core.texts import ERR_NO_TARGET, REASON_NOT_GIVEN, SELF_MODERATION
 from connor.core.timefmt import fmt_full, fmt_full_minute
 from connor.db.repo_anti import RepoAnti
 from connor.db.repo_anti_watcher import RepoAntiWatcher
@@ -42,6 +54,7 @@ log = logging.getLogger(__name__)
 
 _ERR_ALREADY = "Пользователь {mention} уже существует в списке антиработяг"
 _ERR_NOT_IN_LIST = "Пользователь не в списке антиработяг"
+_ERR_HIERARCHY = "Вы не можете добавлять в антиработяги старших или эквивалентных по роли или ботов"
 _ROLE_REMOVE_FAILED = "Я не смог изъять роль так как пользователь не найден или не имеет такой роли"
 _ROLE_RETURN_FAILED = "Я не смог вернуть роль так как пользователь не найден на сервере"
 _FOOTER = "Claptrap желает вам приятного дня"
@@ -144,6 +157,18 @@ class Anti(commands.Cog):
     def _predlozhka(self, guild: discord.Guild) -> discord.abc.GuildChannel | None:
         return self._resolver.channel(guild, self.bot.config.channels["PREDLOZHKA"], "#предложка")
 
+    def _hierarchy_ok(self, author: discord.Member, member: discord.Member, owner_id: int) -> bool:
+        block = check_hierarchy(
+            HierarchyInput(
+                initiator_top_role_pos=author.top_role.position,
+                target_top_role_pos=member.top_role.position,
+                target_is_bot=member.bot,
+                target_id=member.id,
+                guild_owner_id=owner_id,
+            )
+        )
+        return block is HierarchyBlock.OK
+
     async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError) -> None:
         if isinstance(error, commands.MissingRequiredArgument) and error.param.name == "target":
             await ctx.send(ERR_NO_TARGET)
@@ -168,13 +193,21 @@ class Anti(commands.Cog):
             await ctx.send(ERR_NO_TARGET)
             return
 
+        if is_self_moderation(ctx.author.id, target_id):
+            await ctx.send(SELF_MODERATION)
+            return
+
+        member = await fetch_member(guild, target_id)
+        if member is not None and not self._hierarchy_ok(ctx.author, member, guild.owner_id):
+            await ctx.send(_ERR_HIERARCHY)
+            return
+
         now = int(time())
         if not await self.anti_repo.add(target_id, added_at=now, added_by=ctx.author.id):
             await ctx.send(_ERR_ALREADY.format(mention=f"<@{target_id}>"))
             return
 
         reason_text = reason or REASON_NOT_GIVEN
-        member = await fetch_member(guild, target_id)
         mention = f"<@{target_id}>"
 
         # предложка: если доступ на запись уже есть (донат-роль) — сразу deny
