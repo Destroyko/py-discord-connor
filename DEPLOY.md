@@ -37,7 +37,7 @@ sudo chown connor:connor /opt/connor
 sudo -u connor git clone <repo-url> /opt/connor
 cd /opt/connor
 
-sudo -u connor python3.13 -m venv .venv
+sudo -u connor python3.12 -m venv .venv
 sudo -u connor .venv/bin/pip install -e ".[dev]"   # dev — чтобы прогнать pytest на месте
 ```
 

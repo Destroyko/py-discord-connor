@@ -2,7 +2,7 @@
 name = "connor"
 version = "0.1.0"
 description = "Connor — Discord moderation bot for a single guild"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = [
     "discord.py>=2.5,<3",
     "aiosqlite>=0.20",
@@ -28,7 +28,7 @@ include = ["connor*"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py313"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "ASYNC", "RUF"]
