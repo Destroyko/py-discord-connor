@@ -1,4 +1,4 @@
-"""P3.1 — RepoPredlozhka."""
+"""RepoPredlozhka."""
 
 from __future__ import annotations
 

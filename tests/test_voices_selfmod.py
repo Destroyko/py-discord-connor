@@ -1,4 +1,4 @@
-"""P4.3 — самомодерация: /vkick (права, лимит 100, disconnect-ветка), /vreturn,
+"""Самомодерация: /vkick (права, лимит 100, disconnect-ветка), /vreturn,
 !vdel, /ban_list."""
 
 from __future__ import annotations

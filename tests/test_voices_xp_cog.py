@@ -1,4 +1,4 @@
-"""P4.2b/P4.4/P4.5 — ког voices_xp: сверка реестра, тик начисления, недельная
+"""Ког voices_xp: сверка реестра, тик начисления, недельная
 перевыдача роли «Душа компании»."""
 
 from __future__ import annotations
@@ -93,7 +93,7 @@ def _guild(
     )
 
 
-# --- P4.2b сверка реестра --------------------------------------------------------
+# --- сверка реестра ---------------------------------------------------------------
 
 
 async def test_reconcile_removes_row_for_missing_channel(db: Database) -> None:
@@ -150,7 +150,7 @@ async def test_reconcile_forgets_room_that_refilled(db: Database) -> None:
     room_ch.delete.assert_not_awaited()
 
 
-# --- P4.4 тик начисления --------------------------------------------------------
+# --- тик начисления ----------------------------------------------------------------
 
 
 async def test_accrue_writes_batch(db: Database) -> None:
@@ -184,7 +184,7 @@ async def test_accrue_skips_excluded_channels(db: Database) -> None:
     assert {uid for uid, _ in await RepoVoiceXp(db).standings()} == {1, 2}
 
 
-# --- P4.5 недельная перевыдача -------------------------------------------------
+# --- недельная перевыдача -----------------------------------------------------------
 
 
 async def test_weekly_reassigns_and_resets(db: Database) -> None:
@@ -294,7 +294,7 @@ async def test_maybe_weekly_noop_when_not_expired(db: Database) -> None:
     bot_komandy.send.assert_not_awaited()
 
 
-# --- P1.0a: исключение в итерации не убивает tasks.loop -------------------------
+# --- исключение в итерации не убивает tasks.loop ------------------------------------
 
 
 async def test_tick_iteration_swallows_exception(db: Database) -> None:

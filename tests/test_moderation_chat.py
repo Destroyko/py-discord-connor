@@ -1,4 +1,4 @@
-"""P2.A — moderationChat: матчер слов, разбор GIF-ссылок, embed."""
+"""moderationChat: матчер слов, разбор GIF-ссылок, embed."""
 
 from __future__ import annotations
 

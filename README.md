@@ -1,7 +1,6 @@
 # py-discord-connor
 
 Discord-бот модерации для одного сервера. Спека — в GitHub Wiki (`py-discord-connor.wiki`).
-План реализации и чек-лист — [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
 
 ## Требования
 

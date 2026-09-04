@@ -1,9 +1,8 @@
-"""Слой БД: SQLite через aiosqlite (см. IMPLEMENTATION_PLAN.md P0.4).
+"""Слой БД: SQLite через aiosqlite.
 
 ``Database`` — одно соединение на весь процесс (единственный писатель). Открытие
 ставит PRAGMA (WAL / NORMAL / foreign_keys / busy_timeout) и прогоняет миграции.
-Доступ к данным по доменам — модули ``repo_*.py`` (появляются в P3/P4), они берут
-``db.conn``.
+Доступ к данным по доменам — модули ``repo_*.py``, они берут ``db.conn``.
 """
 
 from __future__ import annotations

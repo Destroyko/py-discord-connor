@@ -1,4 +1,4 @@
-"""P1.5a — разбор Command Permissions и приоритет резолва для !-пути."""
+"""Разбор Command Permissions и приоритет резолва для !-пути."""
 
 from __future__ import annotations
 

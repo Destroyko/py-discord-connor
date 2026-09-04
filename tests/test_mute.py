@@ -1,4 +1,4 @@
-"""P2.D — mute: тексты/embed и порядок проверок в /mute."""
+"""mute: тексты/embed и порядок проверок в /mute."""
 
 from __future__ import annotations
 

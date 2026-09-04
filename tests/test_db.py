@@ -1,4 +1,4 @@
-"""P0.4 — слой БД: миграции, PRAGMA, ping, идемпотентность, тай-брейк voice_xp_week."""
+"""Слой БД: миграции, PRAGMA, ping, идемпотентность, тай-брейк voice_xp_week."""
 
 from __future__ import annotations
 

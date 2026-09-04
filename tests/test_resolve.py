@@ -1,4 +1,4 @@
-"""P1.0b — EntityResolver: None-guard с логом один раз на id."""
+"""EntityResolver: None-guard с логом один раз на id."""
 
 from __future__ import annotations
 

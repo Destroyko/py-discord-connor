@@ -1,4 +1,4 @@
-"""P3.4 — roleGiver: B/C/D, текст заявки, аудит-embed, сценарии /give, реакции."""
+"""roleGiver: B/C/D, текст заявки, аудит-embed, сценарии /give, реакции."""
 
 from __future__ import annotations
 

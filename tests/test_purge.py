@@ -1,4 +1,4 @@
-"""P2.B — purge: разбор аргументов, матчер, роддом, embed."""
+"""purge: разбор аргументов, матчер, роддом, embed."""
 
 from __future__ import annotations
 

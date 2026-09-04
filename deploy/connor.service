@@ -1,4 +1,4 @@
-# systemd-юнит Connor (см. IMPLEMENTATION_PLAN.md P6.3, environment.md § "Развёртывание").
+# systemd-юнит Connor (см. environment.md § "Развёртывание").
 #
 # Установка:
 #   sudo cp deploy/connor.service /etc/systemd/system/connor.service

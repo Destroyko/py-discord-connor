@@ -1,4 +1,4 @@
-"""P3.1 — anti: embed'ы и порядок веток /add, /del."""
+"""anti: embed'ы и порядок веток /add, /del."""
 
 from __future__ import annotations
 

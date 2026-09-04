@@ -1,4 +1,4 @@
-"""P1.3 — разбор target."""
+"""Разбор target."""
 
 from __future__ import annotations
 

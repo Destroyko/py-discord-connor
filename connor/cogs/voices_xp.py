@@ -5,14 +5,14 @@
 Один центральный ``tasks.loop`` (интервал из ``config/voices.toml``), на каждой
 итерации:
 
-1. сверка реестра комнат — запись, чей канал удалён вручную, убирается (P4.2b);
+1. сверка реестра комнат — запись, чей канал удалён вручную, убирается;
 2. проверка недельного цикла — если точка отсчёта истекла, разовая перевыдача
    (догон ровно одного пропущенного цикла на старте после offline);
 3. тик начисления — проход по всем войс-каналам области подсчёта, батч-запись
    ненулевого прироста в БД, без единого обращения к Discord API.
 
 Всё тело итерации в ``try/except`` + ``@tick.error`` — цикл ``tasks.loop`` при
-необработанном исключении молча останавливается (P1.0a).
+необработанном исключении молча останавливается.
 """
 
 from __future__ import annotations
@@ -93,7 +93,7 @@ class VoicesXp(commands.Cog):
     async def _on_error(self, exc: BaseException) -> None:
         log.exception("voices tick: ошибка вне тела итерации", exc_info=exc)
 
-    # -- P4.2b сверка реестра комнат -------------------------------------------
+    # -- сверка реестра комнат -------------------------------------------------
 
     async def _reconcile_rooms(self, guild: discord.Guild) -> None:
         now = int(time())
@@ -125,7 +125,7 @@ class VoicesXp(commands.Cog):
                 still_empty[room.channel_id] = since
         self._empty_since = still_empty
 
-    # -- P4.4 тик начисления --------------------------------------------------------
+    # -- тик начисления --------------------------------------------------------
 
     async def _accrue(self, guild: discord.Guild) -> None:
         cfg = self.bot.config.voices
@@ -150,7 +150,7 @@ class VoicesXp(commands.Cog):
 
         await self.xp.add_points(deltas)
 
-    # -- P4.5 недельная перевыдача ----------------------------------------------
+    # -- недельная перевыдача ----------------------------------------------------
 
     async def _maybe_weekly(self, guild: discord.Guild) -> None:
         cfg = self.bot.config.voices

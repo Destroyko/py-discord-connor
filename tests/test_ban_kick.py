@@ -1,4 +1,4 @@
-"""P2.C — banKick: тексты, embed, порядок проверок в /ban."""
+"""banKick: тексты, embed, порядок проверок в /ban."""
 
 from __future__ import annotations
 

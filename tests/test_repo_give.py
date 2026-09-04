@@ -1,4 +1,4 @@
-"""P3.4 — RepoGive."""
+"""RepoGive."""
 
 from __future__ import annotations
 

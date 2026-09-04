@@ -1,4 +1,4 @@
-"""P3.3 — check: ответ /check, реконсиляция, ленивый deny в предложке."""
+"""check: ответ /check, реконсиляция, ленивый deny в предложке."""
 
 from __future__ import annotations
 

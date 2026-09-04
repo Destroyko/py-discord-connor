@@ -1,4 +1,4 @@
-"""P0.5 — bootstrap: intents/кэш/пинги и маппинг ошибок запуска на код выхода."""
+"""Bootstrap: intents/кэш/пинги и маппинг ошибок запуска на код выхода."""
 
 from __future__ import annotations
 

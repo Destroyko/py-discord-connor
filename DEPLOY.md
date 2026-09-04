@@ -1,8 +1,7 @@
 # Развёртывание Connor на VPS
 
 Бот рассчитан на **один сервер Discord**, работает как systemd-сервис, хранит
-состояние в одном файле SQLite. Спека — GitHub Wiki (`py-discord-connor.wiki`),
-чек-лист реализации — [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
+состояние в одном файле SQLite. Спека — GitHub Wiki (`py-discord-connor.wiki`).
 
 ---
 

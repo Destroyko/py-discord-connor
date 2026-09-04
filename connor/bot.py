@@ -1,17 +1,16 @@
-"""Bootstrap бота (см. IMPLEMENTATION_PLAN.md P0.5, P1.7).
+"""Bootstrap бота.
 
 ``ConnorBot`` — ``commands.Bot`` под один сервер:
 
 - intents: default + Guild Members + Message Content + Voice States;
 - член-кэш частичный (``MemberCacheFlags(voice=True, joined=False)``,
-  ``chunk_guilds_at_startup=False``) — следствия см. P1.0d. Полный кэш здесь не
-  вариант: на гильдии в сотни тысяч участников он съедает сотни МБ — десктопные
-  МБ ОЗУ навсегда, а не разово при рестарте (``chunk_guilds_at_startup`` один раз
-  выгружает всю гильдию, но кэш остаётся в памяти весь аптайм). Вотчер ручных
-  изменений роли «работяга» (``anti.py``) поэтому не полагается на кэш вообще —
-  периодический опрос audit log вместо gateway-события ``on_member_update``;
-  все резолвы участника в командах — через ``fetch_member`` (P1.0d), не голый
-  ``get_member``;
+  ``chunk_guilds_at_startup=False``). Полный кэш здесь не вариант: на гильдии в
+  сотни тысяч участников он съедает сотни МБ ОЗУ навсегда, а не разово при
+  рестарте (``chunk_guilds_at_startup`` один раз выгружает всю гильдию, но кэш
+  остаётся в памяти весь аптайм). Вотчер ручных изменений роли «работяга»
+  (``anti.py``) поэтому не полагается на кэш вообще — периодический опрос audit
+  log вместо gateway-события ``on_member_update``; все резолвы участника в
+  командах — через ``fetch_member``, не голый ``get_member``;
 - ``allowed_mentions`` по умолчанию — ничего не пингуем; места, где пинг нужен
   (перевыдача «Души компании», ``@here`` в roleGiver), передают override явно;
 - все команды регистрируются guild-scoped на ``GUILD_ID`` (мгновенный синк);
@@ -221,7 +220,7 @@ class ConnorBot(commands.Bot):
     async def on_ready(self) -> None:
         if self.user is not None:
             log.info("вошёл как %s (%d)", self.user, self.user.id)
-        if self._preflight_done:  # on_ready может прийти повторно (реконнекты) — P1.0f
+        if self._preflight_done:  # on_ready может прийти повторно (реконнекты)
             return
         self._preflight_done = True
         self._ready_at = time.monotonic()
