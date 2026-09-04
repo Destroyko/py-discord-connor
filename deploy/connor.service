@@ -32,6 +32,13 @@ RestartSec=10
 # exit 1 (сбой входа / БД / фатальный preflight) — рестартим, но под StartLimit.
 RestartPreventExitStatus=2
 
+# Учёт памяти/CPU для этого юнита — не везде default (зависит от дистрибутива/
+# образа VPS). Без него `systemctl status`/`systemd-cgtop` не покажут потребление
+# юнита вообще (пусто, а не 0) — включаем явно, чтобы не зависеть от системных
+# настроек по умолчанию.
+MemoryAccounting=yes
+CPUAccounting=yes
+
 # Файловые логи по умолчанию в /opt/connor/logs (внутри ReadWritePaths — писать
 # можно). Свой каталог — задать LOG_DIR в .env и добавить его сюда, напр.:
 #   LogsDirectory=connor            # systemd создаст /var/log/connor
