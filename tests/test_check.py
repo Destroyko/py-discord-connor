@@ -109,6 +109,20 @@ async def test_lazy_deny_for_anti_worker_in_predlozhka(db: Database) -> None:
     msg.delete.assert_awaited_once()
     msg.channel.set_permissions.assert_awaited_once()
     assert await RepoPredlozhka(db).contains(10) is True
+    msg.author.send.assert_awaited_once_with(
+        "Увы! Вы антиработяга, и не можете писать в предложку"
+    )
+
+
+async def test_lazy_deny_survives_closed_dm(db: Database) -> None:
+    await RepoAnti(db).add(10, added_at=1, added_by=1)
+    msg = _msg(author_id=10, channel_id=_PREDLOZHKA_ID)
+    msg.author.send.side_effect = discord.Forbidden(MagicMock(status=403), "DMs closed")
+
+    await Check.on_message(_cog(db), msg)  # не должно упасть
+
+    msg.channel.set_permissions.assert_awaited_once()
+    assert await RepoPredlozhka(db).contains(10) is True
 
 
 async def test_lazy_deny_ignores_non_anti(db: Database) -> None:

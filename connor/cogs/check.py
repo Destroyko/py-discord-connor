@@ -32,6 +32,7 @@ log = logging.getLogger(__name__)
 
 _ACCESS_OPEN = "Доступ открыт"
 _ACCESS_DENIED = "Недостаточно прав"
+_ANTI_DENY_DM = "Увы! Вы антиработяга, и не можете писать в предложку"
 
 
 class Check(commands.Cog):
@@ -86,6 +87,14 @@ class Check(commands.Cog):
                 self.pred_repo,
                 reason="анти-работяга: сообщение в предложке",
             )
+            try:
+                await message.author.send(_ANTI_DENY_DM)
+            except discord.HTTPException:
+                log.info(
+                    "DM об анти-запрете в предложке не доставлено (%s, %d): ЛС закрыты",
+                    message.author,
+                    message.author.id,
+                )
 
 
 async def setup(bot: commands.Bot) -> None:
