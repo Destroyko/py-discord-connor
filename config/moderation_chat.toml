@@ -53,6 +53,9 @@ suspicious_words = [
 # поэтому голого регистрируемого домена достаточно; media-хосты продублированы
 # для наглядности. klipy.co — ОТДЕЛЬНЫЙ домен от klipy.com, нужен своей строкой;
 # то же для youtube.com/youtu.be и twitter.com/x.com — разные домены, не алиасы.
+# discordapp.net/discordapp.com — свой же CDN Discord: ссылка на уже загруженное
+# вложение (например, скопированная через "Copy Link"), вставленная как текст,
+# а не сам файл-вложение сообщения.
 gif_domains = [
     "tenor.com",
     "media.tenor.com",
@@ -65,4 +68,6 @@ gif_domains = [
     "tiktok.com",
     "twitter.com",
     "x.com",
+    "discordapp.net",
+    "discordapp.com",
 ]
