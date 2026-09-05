@@ -66,6 +66,27 @@ def test_gif_links_empty_domain_list() -> None:
     assert extract_gif_links("https://tenor.com/x", ()) == []
 
 
+_DISCORD_GIFS = ("tenor.com", "discordapp.net", "discordapp.com")
+
+
+def test_gif_links_discord_cdn_attachment_matches() -> None:
+    for url in (
+        "https://cdn.discordapp.com/attachments/1/2/pic.png?ex=abc",
+        "https://media.discordapp.net/attachments/1/2/clip.mp4",
+    ):
+        assert extract_gif_links(f"вот {url} смотри", _DISCORD_GIFS) == [url]
+
+
+def test_gif_links_discord_cdn_non_attachment_ignored() -> None:
+    # эмодзи из внешнего набора: Discord вставляет markdown-ссылку на .webp
+    emoji = (
+        "[aryujinconcerned](https://cdn.discordapp.com/emojis/"
+        "691140376798691350.webp?size=48&animated=true&name=aryujinconcerned&lossless=true)"
+    )
+    assert extract_gif_links(emoji, _DISCORD_GIFS) == []
+    assert extract_gif_links("https://cdn.discordapp.com/avatars/1/abc.png", _DISCORD_GIFS) == []
+
+
 # --- embeds --------------------------------------------------------------------------
 
 
@@ -115,9 +136,9 @@ def test_build_media_meta_embed() -> None:
 # --- ModerationChat._check_media ------------------------------------------------------
 
 
-def _cog(*, channel: object) -> ModerationChat:
+def _cog(*, channel: object, gif_domains: tuple[str, ...] = _GIFS) -> ModerationChat:
     config = SimpleNamespace(
-        moderation_chat=SimpleNamespace(suspicious_words=(), gif_domains=_GIFS),
+        moderation_chat=SimpleNamespace(suspicious_words=(), gif_domains=gif_domains),
         channels={"CHEKLIST2": 999},
     )
     bot = SimpleNamespace(config=config, get_channel=lambda cid: channel if cid == 999 else None)
@@ -154,6 +175,34 @@ async def test_check_media_keeps_comment_text_alongside_link() -> None:
 
     content_msg = channel.send.await_args_list[0].args[0]
     assert content_msg == "ору с этого\nhttps://tenor.com/view/cat-12345"
+
+
+async def test_check_media_external_emoji_link_not_forwarded() -> None:
+    # внешний эмодзи (markdown-ссылка на .webp) — не медиа, в #чек-лист2 не уходит
+    channel = SimpleNamespace(send=AsyncMock())
+    cog = _cog(channel=channel, gif_domains=("tenor.com", "discordapp.com", "discordapp.net"))
+
+    await cog._check_media(
+        _message(
+            content="[aryujinconcerned](https://cdn.discordapp.com/emojis/"
+            "691140376798691350.webp?size=48&name=aryujinconcerned)"
+        )
+    )
+
+    channel.send.assert_not_awaited()
+
+
+async def test_check_media_strips_markdown_link_wrapper() -> None:
+    # ссылка обёрнута в markdown [текст](ссылка) — не должно остаться «[текст]()»
+    channel = SimpleNamespace(send=AsyncMock())
+    cog = _cog(channel=channel)
+
+    await cog._check_media(
+        _message(content="[смотри](https://tenor.com/view/cat-12345) ору")
+    )
+
+    content_msg = channel.send.await_args_list[0].args[0]
+    assert content_msg == "ору\nhttps://tenor.com/view/cat-12345"
 
 
 # --- ModerationChat._check_text (обход автомода + подозрительные слова) --------------
@@ -281,13 +330,13 @@ async def test_text_clean_message_is_silent() -> None:
     channel.send.assert_not_awaited()
 
 
-async def test_text_bypass_disabled_skips_deobfuscation() -> None:
+async def test_text_bypass_disabled_skips_detection() -> None:
     channel = SimpleNamespace(send=AsyncMock())
     cog = _text_cog(
         channel=channel, suspicious=("спам",), automod=_banwords("спам"), bypass_enabled=False
     )
 
-    await cog._check_text(_text_message("с п а м"))  # склейка не проверяется
+    await cog._check_text(_text_message("с п а м"))  # обход не проверяется вообще
 
     channel.send.assert_not_awaited()
 

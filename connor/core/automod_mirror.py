@@ -9,9 +9,13 @@ Discord (целое слово / wildcard ``*`` / regex, минус allow-list) 
 
 - ``strict`` (NFKC + casefold) сравнивается с ``baseline`` сообщения — эталон
   «как у Discord». Совпадение здесь означает, что слово видно и так;
-- ``loose`` (полная нормализация) сравнивается с ``normalize`` / склейкой
-  сообщения. Обе стороны фолдятся одинаково, поэтому латинские ключевые слова не
-  ломаются о кириллические двойники и наоборот.
+- ``loose`` (полная нормализация) сравнивается с ``normalize`` сообщения. Обе
+  стороны фолдятся одинаково, поэтому латинские ключевые слова не ломаются о
+  кириллические двойники и наоборот. В ``loose`` между каждой парой букв слова
+  допускается до ``_GAP`` символов-разделителей — так ловятся ``го йда``,
+  ``гой да``, ``г.о.й.д.а`` (граница слова сохраняется: ``гойда`` внутри
+  длинного слова не матчится). Допуск не применяется к словам короче
+  ``_MIN_GAP_LEN`` — на них он даёт слишком много ложных совпадений.
 """
 
 from __future__ import annotations
@@ -26,7 +30,13 @@ from connor.core import deobfuscate
 log = logging.getLogger(__name__)
 
 _FORM_CHARS = "подмена символов"
-_FORM_SPACING = "пробелы между буквами"
+_FORM_SPACING = "разделители между буквами"
+
+#: допустимо символов-разделителей между двумя буквами банворда в ``loose``
+_GAP = r"[\W_]{0,2}"
+#: слова короче — только точный матч (допуск разделителей для них слишком шумный)
+_MIN_GAP_LEN = 3
+_SEP_RE = re.compile(r"[\W_]")
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,9 +47,15 @@ class BypassHit:
     form: str
 
 
-def _wild_pattern(kw: str) -> re.Pattern[str]:
+def _spaced(word: str, gap: str) -> str:
+    """Экранированное слово с допуском ``gap`` между каждой парой букв."""
+    return gap.join(re.escape(ch) for ch in word)
+
+
+def _wild_pattern(kw: str, gap: str) -> re.Pattern[str]:
     """``кв*`` → префикс слова, ``*кв`` → суффикс, ``*кв*`` → подстрока, ``к*в`` → к…в."""
-    segs = [re.escape(s) for s in kw.split("*") if s]
+    g = gap if len(kw.replace("*", "")) >= _MIN_GAP_LEN else ""
+    segs = [_spaced(s, g) for s in kw.split("*") if s]
     core = r"\w*".join(segs) if segs else r"\w+"
     left = "" if kw.startswith("*") else r"(?<!\w)"
     right = "" if kw.endswith("*") else r"(?!\w)"
@@ -96,7 +112,11 @@ def _compile_regexes(patterns: Iterable[str]) -> tuple[re.Pattern[str], ...]:
 
 
 class _Matcher:
-    """Матч по семантике Discord: целое слово, wildcard, regex."""
+    """Матч по семантике Discord: целое слово, wildcard, regex.
+
+    ``gap`` (непустой только у ``loose``) — regex-вставка, допускаемая между
+    каждой парой букв слова: разделители внутри банворда.
+    """
 
     __slots__ = ("_plain_re", "_regexes", "_wild")
 
@@ -105,36 +125,38 @@ class _Matcher:
         plain: frozenset[str],
         wild: tuple[str, ...],
         regexes: tuple[re.Pattern[str], ...],
+        *,
+        gap: str = "",
     ) -> None:
-        self._plain_re: re.Pattern[str] | None = (
-            re.compile(
-                r"(?<!\w)(?:"
-                + "|".join(re.escape(k) for k in sorted(plain, key=len, reverse=True))
-                + r")(?!\w)"
+        self._plain_re: re.Pattern[str] | None = None
+        if plain:
+            alts = "|".join(
+                _spaced(k, gap if len(k) >= _MIN_GAP_LEN else "")
+                for k in sorted(plain, key=len, reverse=True)
             )
-            if plain
-            else None
-        )
+            self._plain_re = re.compile(rf"(?<!\w)(?:{alts})(?!\w)")
         self._wild: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
-            (kw, _wild_pattern(kw)) for kw in wild
+            (kw, _wild_pattern(kw, gap)) for kw in wild
         )
         self._regexes = regexes
 
-    def match(self, text: str) -> str | None:
-        """Первое совпадение — вернуть совпавший текст (для wildcard — само слово)."""
+    def match(self, text: str) -> tuple[str, str] | None:
+        """``(ключевое слово, совпавший фрагмент)`` первого совпадения или ``None``."""
         if not text:
             return None
         if self._plain_re is not None:
             m = self._plain_re.search(text)
             if m is not None:
-                return m.group(0)
+                got = m.group(0)
+                return _SEP_RE.sub("", got), got  # ключ без вставленных разделителей
         for kw, pat in self._wild:
-            if pat.search(text) is not None:
-                return kw
+            m = pat.search(text)
+            if m is not None:
+                return kw, m.group(0)
         for rx in self._regexes:
             m = rx.search(text)
             if m is not None:
-                return m.group(0)
+                return m.group(0), m.group(0)
         return None
 
 
@@ -197,7 +219,7 @@ class AutoModKeywords:
         )
         return cls(
             strict=_Matcher(strict_plain, strict_wild, regexes),
-            loose=_Matcher(loose_plain, loose_wild, regexes),
+            loose=_Matcher(loose_plain, loose_wild, regexes, gap=_GAP),
             allow=allow,
             keyword_count=len(strict_plain) + len(strict_wild),
             regex_count=len(regexes),
@@ -207,14 +229,14 @@ class AutoModKeywords:
         core = keyword.replace("*", "")
         return any(a and a in text and core in a for a in self._allow)
 
-    def find_bypass(self, *, raw: str, norm: str, deobf: str) -> BypassHit | None:
+    def find_bypass(self, *, raw: str, norm: str) -> BypassHit | None:
         if self._strict.match(raw) is not None:
             return None
         hit = self._loose.match(norm)
-        form, target = _FORM_CHARS, norm
         if hit is None:
-            hit = self._loose.match(deobf)
-            form, target = _FORM_SPACING, deobf
-        if hit is None or self._allowed(target, hit):
             return None
-        return BypassHit(keyword=hit, form=form)
+        keyword, got = hit
+        if self._allowed(norm, keyword):
+            return None
+        form = _FORM_SPACING if _SEP_RE.search(got) else _FORM_CHARS
+        return BypassHit(keyword=keyword, form=form)

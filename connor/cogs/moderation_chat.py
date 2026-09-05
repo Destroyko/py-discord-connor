@@ -5,7 +5,7 @@
 - **обход автомода** → красный embed. Банворды бот читает из правил Discord
   AutoMod (тип «keyword», только включённые) по API и ловит сообщения, которые
   проскочили родной фильтр за счёт подмены букв на похожие из другого алфавита
-  или разделителей между буквами (``с п а м``). См. ``core/automod_mirror``;
+  или разделителей между буквами (``с п а м``, ``го йда``). См. ``core/automod_mirror``;
 - **подозрительное слово** → жёлтый embed (список подстрок из конфига).
 Медиа — независимо: пересылка вложений (`proxy_url`) + метаданных в ``#чек-лист2``.
 
@@ -40,6 +40,11 @@ _URL_RE = re.compile(r"https?://\S+")
 _TRAILING = ").,!?;\"'>"
 _FIELD_MAX = 1024
 
+# CDN Discord отдаёт по одним хостам и вложения, и эмодзи/стикеры/аватары. «Медиа»
+# для #чек-лист2 — только вложения (путь /attachments/...): эмодзи из внешнего
+# набора Discord подставляет в текст как markdown-ссылку на .webp и это не контент.
+_DISCORD_CDN = ("discordapp.com", "discordapp.net")
+
 _SUSPICIOUS_COLOUR = discord.Colour.gold()  # 0xF1C40F — предупреждение
 _BYPASS_COLOUR = discord.Colour(0xFF0000)  # обход банворда автомода
 
@@ -53,17 +58,29 @@ def find_suspicious(text: str, words: Iterable[str]) -> str | None:
     return None
 
 
+def _host_matches(host: str, domains: Iterable[str]) -> bool:
+    return any(host == d or host.endswith("." + d) for d in domains)
+
+
 def extract_gif_links(text: str, gif_domains: Iterable[str]) -> list[str]:
-    """URL из текста, чей хост входит в список GIF-провайдеров (или его поддомен)."""
+    """URL из текста, чей хост входит в список GIF-провайдеров (или его поддомен).
+
+    Для CDN Discord дополнительно требуется путь ``/attachments/`` — иначе сюда
+    попадают ссылки на эмодзи/стикеры (не контент сообщения).
+    """
     domains = tuple(d.casefold().lstrip(".") for d in gif_domains if d)
     if not domains:
         return []
     found: list[str] = []
     for raw in _URL_RE.findall(text):
         url = raw.rstrip(_TRAILING)
-        host = (urlsplit(url).hostname or "").casefold()
-        if host and any(host == d or host.endswith("." + d) for d in domains):
-            found.append(url)
+        split = urlsplit(url)
+        host = (split.hostname or "").casefold()
+        if not host or not _host_matches(host, domains):
+            continue
+        if _host_matches(host, _DISCORD_CDN) and "/attachments/" not in split.path.casefold():
+            continue
+        found.append(url)
     return found
 
 
@@ -230,10 +247,8 @@ class ModerationChat(commands.Cog):
         author_role_ids = {getattr(r, "id", 0) for r in getattr(message.author, "roles", ())}
         if author_role_ids & self._exempt_roles:
             return None
-        base, norm, deobf = deobfuscate.variants(
-            content, collapse_min=self._mc.collapse_repeats_min
-        )
-        return self._automod.find_bypass(raw=base, norm=norm, deobf=deobf)
+        base, norm = deobfuscate.variants(content, collapse_min=self._mc.collapse_repeats_min)
+        return self._automod.find_bypass(raw=base, norm=norm)
 
     async def _forward_text(
         self, message: discord.Message, *, colour: discord.Colour, matched: str | None
@@ -264,8 +279,13 @@ class ModerationChat(commands.Cog):
         # 1. контент: текст первой строкой (если был) + все ссылки одним сообщением.
         # GIF-пикер Discord кладёт саму ссылку на гифку в message.content — если это
         # весь текст сообщения, комментария автора тут нет, дублировать ссылку не нужно.
+        # Ссылка может быть обёрнута в markdown [текст](ссылка) (так Discord вставляет
+        # внешний эмодзи) — снимаем обёртку целиком, иначе останется «[текст]()».
         comment = message.content or ""
         for link in gif_links:
+            comment = re.sub(
+                r"\[[^\]]*\]\(\s*" + re.escape(link) + r"[^)]*\)", "", comment
+            )
             comment = comment.replace(link, "")
         comment = comment.strip()
 

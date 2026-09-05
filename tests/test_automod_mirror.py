@@ -16,8 +16,8 @@ def _kw(words=(), allow=(), regex=(), ignore=()) -> AutoModKeywords:
 
 
 def _bypass(mk: AutoModKeywords, text: str):
-    base, norm, deobf = deobfuscate.variants(text, collapse_min=3)
-    return mk.find_bypass(raw=base, norm=norm, deobf=deobf)
+    base, norm = deobfuscate.variants(text, collapse_min=3)
+    return mk.find_bypass(raw=base, norm=norm)
 
 
 # --- дельта: сырой матч не считается обходом -------------------------------------
@@ -51,27 +51,57 @@ def test_homoglyph_substitution_flagged() -> None:
     assert hit is not None and hit.form == "подмена символов"
 
 
-# --- пробелы / разделители между буквами ---------------------------------------
+def test_translit_s_substitution_flagged() -> None:
+    hit = _bypass(_kw(["спам"]), "налетай Sпам")  # транслит S -> с
+    assert hit is not None and hit.form == "подмена символов"
 
 
-def test_spaced_letters_flagged() -> None:
+def test_mixed_translit_letter_flagged() -> None:
+    hit = _bypass(_kw(["казино"]), "тут каzино открыто")  # латинская z
+    assert hit is not None and hit.form == "подмена символов"
+
+
+# --- разделители между буквами -----------------------------------------------
+
+
+def test_every_letter_spaced_flagged() -> None:
     hit = _bypass(_kw(["спам"]), "смотри с п а м здесь")
     assert hit is not None
     assert hit.keyword == "спам"
-    assert hit.form == "пробелы между буквами"
+    assert hit.form == "разделители между буквами"
+
+
+def test_single_space_split_flagged() -> None:
+    # один пробел, куски по 2+ буквы — раньше не ловилось
+    for text in ("сп ам", "с пам", "спа м"):
+        hit = _bypass(_kw(["спам"]), f"тут {text} вот")
+        assert hit is not None, text
+        assert hit.keyword == "спам"
+        assert hit.form == "разделители между буквами"
 
 
 def test_dotted_letters_flagged() -> None:
     hit = _bypass(_kw(["спам"]), "с.п.а.м")
-    assert hit is not None and hit.form == "пробелы между буквами"
+    assert hit is not None and hit.form == "разделители между буквами"
 
 
 # --- защита от ложных срабатываний --------------------------------------------
 
 
 def test_longer_word_containing_keyword_not_flagged() -> None:
-    # "спам" — не целое слово в "спамер"/"спамил"; склейки тоже нет
+    # "спам" — не целое слово в "спамер"/"спамил"; допуск разделителей это не меняет
     assert _bypass(_kw(["спам"]), "спамер уже спамил в чате") is None
+
+
+def test_gap_does_not_cross_letters() -> None:
+    # между буквами банворда допускаются только разделители, не другие буквы
+    assert _bypass(_kw(["спам"]), "спХам спаХм") is None
+
+
+def test_short_keyword_has_no_gap_tolerance() -> None:
+    # слово короче 3 букв — только точный матч, иначе "х й" ловит слишком часто
+    assert _bypass(_kw(["хй"]), "буквы х й тут") is None
+    assert _bypass(_kw(["хй"]), "буквы xй тут") is not None  # латинская x, подмена ловится
 
 
 # --- латинские ключевые слова (обе стороны фолдятся одинаково) -----------------

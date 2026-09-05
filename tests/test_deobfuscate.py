@@ -1,16 +1,12 @@
-"""deobfuscate: снятие обфускации символов и склейка разнесённых букв.
+"""deobfuscate: снятие обфускации символов (двойники, zero-width, лит, повторы).
 
+Разделители между буквами разбирает матчер в automod_mirror, не этот модуль.
 Нейтральные слова-заглушки ("казино", "спам") вместо реальных банвордов.
 """
 
 from __future__ import annotations
 
-from connor.core.deobfuscate import (
-    baseline,
-    deobfuscate_spacing,
-    normalize,
-    variants,
-)
+from connor.core.deobfuscate import baseline, normalize, variants
 
 # --- normalize: подмена символов --------------------------------------------------
 
@@ -26,6 +22,23 @@ def test_normalize_folds_leet_digits_and_symbols() -> None:
     assert normalize("казин0") == "казино"  # 0 -> о
     assert normalize("к@зино") == "казино"  # @ -> а
     assert normalize("$пам") == "спам"  # $ -> с
+    assert normalize("sпам") == "спам"  # транслит s -> с
+    assert normalize("педаpаS") == "педарас"  # p -> р, S -> с
+
+
+def test_normalize_folds_unambiguous_translit_letters() -> None:
+    # d/f/g/l/v/z — однозначная транслит-замена латиница→кириллица, без конфликта
+    assert normalize("гниdа") == "гнида"
+    assert normalize("zараза") == "зараза"
+    assert normalize("gном") == "гном"
+    assert normalize("lама") == "лама"
+    assert normalize("vаза") == "ваза"
+    assert normalize("fары") == "фары"
+
+
+def test_normalize_does_not_do_full_translit() -> None:
+    # p визуально → р, r/u/n не сворачиваются: pidaras НЕ становится «пидарас»
+    assert normalize("pidaras") == "ридаrас"
 
 
 def test_normalize_strips_zero_width_and_diacritics() -> None:
@@ -50,37 +63,9 @@ def test_normalize_collapses_repeats() -> None:
 
 
 def test_normalize_keeps_spaces_and_is_idempotent() -> None:
-    assert normalize("к а з и н о") == "к а з и н о"
+    assert normalize("к а з и н о") == "к а з и н о"  # разделители трогает матчер, не norm
     once = normalize("Kаз​ИИИно")
     assert normalize(once) == once
-
-
-# --- deobfuscate_spacing: склейка разнесённых букв -------------------------------
-
-
-def test_spacing_joins_single_letter_runs() -> None:
-    assert deobfuscate_spacing("к а з и н о") == "казино"
-    assert deobfuscate_spacing("к.а.з.и.н.о") == "казино"
-    assert deobfuscate_spacing("к-а-з-и-н-о.") == "казино."
-    assert deobfuscate_spacing("н_а_х") == "нах"
-
-
-def test_spacing_leaves_normal_words_alone() -> None:
-    assert deobfuscate_spacing("это обычное слово") == "это обычное слово"
-    assert deobfuscate_spacing("казино") == "казино"
-    assert deobfuscate_spacing("я") == "я"
-
-
-def test_spacing_ignores_short_letter_runs() -> None:
-    # порог 3 буквы: связки из 1-2 одиночных букв не склеиваются
-    assert deobfuscate_spacing("я и ты") == "я и ты"
-    assert deobfuscate_spacing("а б") == "а б"
-    # 3+ одиночных букв склеиваются (известный компромисс по ложным срабатываниям)
-    assert deobfuscate_spacing("и т д") == "итд"
-
-
-def test_spacing_collapses_padding_repeats() -> None:
-    assert deobfuscate_spacing("к к к а з и н о") == "казино"
 
 
 # --- variants: единый вход ------------------------------------------------------
@@ -90,14 +75,12 @@ def test_baseline_does_not_fold_lookalikes() -> None:
     assert baseline("Kазино") == "kазино"  # латинская K сохранена, регистр снят
 
 
-def test_variants_triplet_is_consistent() -> None:
-    base, norm, deobf = variants("K А З И Н О")
+def test_variants_pair_is_consistent() -> None:
+    base, norm = variants("K А З И Н О")
     assert base == "k а з и н о"
     assert norm == "к а з и н о"
-    assert deobf == "казино"
 
 
 def test_variants_empty() -> None:
-    assert variants("") == ("", "", "")
+    assert variants("") == ("", "")
     assert normalize("") == ""
-    assert deobfuscate_spacing("") == ""
