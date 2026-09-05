@@ -1,15 +1,20 @@
-"""Пассивный мониторинг сообщений — слова и медиа (см. ``moderationChat.md``).
+"""Пассивный мониторинг сообщений — слова, обход автомода и медиа
+(см. ``moderationChat.md``).
 
-Два независимых критерия, каждый проверяется сам по себе:
-- **слова** → пересылка embed в ``#чек-лист`` (только текст сообщения);
-- **медиа** → пересылка вложений (`proxy_url`) + метаданных в ``#чек-лист2``.
+Текст: два критерия с приоритетом (в ``#чек-лист`` уходит **один** embed):
+- **обход автомода** → красный embed. Банворды бот читает из правил Discord
+  AutoMod (тип «keyword», только включённые) по API и ловит сообщения, которые
+  проскочили родной фильтр за счёт подмены букв на похожие из другого алфавита
+  или разделителей между буквами (``с п а м``). См. ``core/automod_mirror``;
+- **подозрительное слово** → жёлтый embed (список подстрок из конфига).
+Медиа — независимо: пересылка вложений (`proxy_url`) + метаданных в ``#чек-лист2``.
 
 Над оригинальным сообщением бот ничего не делает (не удаляет, не реагирует).
-Автономный модуль: своё состояние — конфиг-файл со списками слов и GIF-доменов.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from collections.abc import Iterable
@@ -19,18 +24,24 @@ from urllib.parse import urlsplit
 import discord
 from discord.ext import commands
 
+from connor.core import deobfuscate
+from connor.core.automod_mirror import AutoModKeywords, BypassHit
 from connor.core.channels import in_roddom
 from connor.core.msg_guard import should_process_message
 from connor.core.resolve import EntityResolver
 
 if TYPE_CHECKING:
     from connor.bot import ConnorBot
+    from connor.config import ModerationChatConfig
 
 log = logging.getLogger(__name__)
 
 _URL_RE = re.compile(r"https?://\S+")
 _TRAILING = ").,!?;\"'>"
 _FIELD_MAX = 1024
+
+_SUSPICIOUS_COLOUR = discord.Colour.gold()  # 0xF1C40F — предупреждение
+_BYPASS_COLOUR = discord.Colour(0xFF0000)  # обход банворда автомода
 
 
 def find_suspicious(text: str, words: Iterable[str]) -> str | None:
@@ -61,11 +72,19 @@ def _source_title(channel: discord.abc.GuildChannel | discord.Thread) -> str:
 
 
 def build_word_embed(
-    *, source_title: str, author_mention: str, content: str, jump_url: str
+    *,
+    source_title: str,
+    author_mention: str,
+    content: str,
+    jump_url: str,
+    colour: discord.Colour | None = None,
+    matched: str | None = None,
 ) -> discord.Embed:
-    embed = discord.Embed(title=source_title)
+    embed = discord.Embed(title=source_title, colour=colour)
     embed.add_field(name="Автор", value=author_mention, inline=False)
     embed.add_field(name="Содержание", value=(content[:_FIELD_MAX] or "—"), inline=False)
+    if matched is not None:
+        embed.add_field(name="Совпадение", value=(matched[:_FIELD_MAX] or "—"), inline=False)
     embed.add_field(name="Ссылка на пост", value=jump_url, inline=False)
     return embed
 
@@ -83,17 +102,96 @@ class ModerationChat(commands.Cog):
     def __init__(self, bot: ConnorBot) -> None:
         self.bot = bot
         self._resolver = EntityResolver(log)
+        self._automod = AutoModKeywords.empty()
+        self._automod_ready = False
+        self._exempt_channels: frozenset[int] = frozenset()
+        self._exempt_roles: frozenset[int] = frozenset()
+        self._sync_lock = asyncio.Lock()
+
+    @property
+    def _mc(self) -> ModerationChatConfig:
+        return self.bot.config.moderation_chat
 
     @property
     def _words(self) -> tuple[str, ...]:
-        return self.bot.config.moderation_chat.suspicious_words
+        return self._mc.suspicious_words
 
     @property
     def _gif_domains(self) -> tuple[str, ...]:
-        return self.bot.config.moderation_chat.gif_domains
+        return self._mc.gif_domains
 
     def _channel(self, channel_id: int, label: str) -> discord.abc.Messageable | None:
         return self._resolver.channel(self.bot, channel_id, label)
+
+    # -- синхронизация банвордов с Discord AutoMod -------------------------------
+
+    @commands.Cog.listener()
+    async def on_ready(self) -> None:
+        await self._sync_automod()
+
+    @commands.Cog.listener()
+    async def on_automod_rule_create(self, rule: discord.AutoModRule) -> None:
+        await self._sync_automod()
+
+    @commands.Cog.listener()
+    async def on_automod_rule_update(self, rule: discord.AutoModRule) -> None:
+        await self._sync_automod()
+
+    @commands.Cog.listener()
+    async def on_automod_rule_delete(self, rule: discord.AutoModRule) -> None:
+        await self._sync_automod()
+
+    async def _sync_automod(self) -> None:
+        if not self._mc.automod_bypass_enabled:
+            return
+        # события правил могут прийти пачкой одновременно с on_ready — сериализуем,
+        # чтобы поздний fetch не перезаписался ранним
+        async with self._sync_lock:
+            guild = self.bot.get_guild(self.bot.config.guild_id)
+            if guild is None:
+                return
+            try:
+                rules = await guild.fetch_automod_rules()
+            except discord.HTTPException as exc:
+                log.error(
+                    "не удалось прочитать правила AutoMod (%s) — детект обхода неактивен "
+                    "до следующей синхронизации",
+                    exc,
+                )
+                return
+
+            keyword_filter: list[str] = []
+            allow_list: list[str] = []
+            regex_patterns: list[str] = []
+            exempt_channels: set[int] = set()
+            exempt_roles: set[int] = set()
+            for rule in rules:
+                trigger = rule.trigger
+                if not rule.enabled or trigger.type is not discord.AutoModRuleTriggerType.keyword:
+                    continue
+                keyword_filter += trigger.keyword_filter
+                allow_list += trigger.allow_list
+                regex_patterns += trigger.regex_patterns
+                exempt_channels |= set(rule.exempt_channel_ids)
+                exempt_roles |= set(rule.exempt_role_ids)
+
+            self._automod = AutoModKeywords.build(
+                keyword_filter,
+                allow_list,
+                regex_patterns,
+                collapse_min=self._mc.collapse_repeats_min,
+                ignore=self._mc.automod_bypass_ignore,
+            )
+            self._exempt_channels = frozenset(exempt_channels)
+            self._exempt_roles = frozenset(exempt_roles)
+            self._automod_ready = True
+            log.info(
+                "AutoMod-обход: ключевых слов %d, regex %d",
+                self._automod.keyword_count,
+                self._automod.regex_count,
+            )
+
+    # -- листенер сообщений ------------------------------------------------------
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
@@ -101,12 +199,45 @@ class ModerationChat(commands.Cog):
             return
         if in_roddom(message.channel, self.bot.config.categories["RODDOM"]):
             return
-        await self._check_words(message)
+        await self._check_text(message)
         await self._check_media(message)
 
-    async def _check_words(self, message: discord.Message) -> None:
-        if find_suspicious(message.content or "", self._words) is None:
+    async def _check_text(self, message: discord.Message) -> None:
+        content = message.content or ""
+        if not content:
             return
+
+        bypass = self._detect_bypass(message, content)
+        if bypass is not None:
+            await self._forward_text(
+                message, colour=_BYPASS_COLOUR, matched=f"{bypass.keyword} · {bypass.form}"
+            )
+            return
+
+        if find_suspicious(content, self._words) is not None:
+            await self._forward_text(message, colour=_SUSPICIOUS_COLOUR, matched=None)
+
+    def _detect_bypass(self, message: discord.Message, content: str) -> BypassHit | None:
+        if not (self._mc.automod_bypass_enabled and self._automod_ready):
+            return None
+        if self._automod.keyword_count == 0 and self._automod.regex_count == 0:
+            return None
+        channel = message.channel
+        if channel.id in self._exempt_channels:
+            return None
+        if getattr(channel, "parent_id", None) in self._exempt_channels:  # тред → родитель
+            return None
+        author_role_ids = {getattr(r, "id", 0) for r in getattr(message.author, "roles", ())}
+        if author_role_ids & self._exempt_roles:
+            return None
+        base, norm, deobf = deobfuscate.variants(
+            content, collapse_min=self._mc.collapse_repeats_min
+        )
+        return self._automod.find_bypass(raw=base, norm=norm, deobf=deobf)
+
+    async def _forward_text(
+        self, message: discord.Message, *, colour: discord.Colour, matched: str | None
+    ) -> None:
         channel = self._channel(self.bot.config.channels["CHEKLIST"], "#чек-лист")
         if channel is None:
             return
@@ -116,6 +247,8 @@ class ModerationChat(commands.Cog):
                 author_mention=message.author.mention,
                 content=message.content or "",
                 jump_url=message.jump_url,
+                colour=colour,
+                matched=matched,
             )
         )
 

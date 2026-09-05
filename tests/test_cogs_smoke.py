@@ -51,7 +51,13 @@ def _fake_config() -> SimpleNamespace:
             member_min_tenure_days=14,
             join_after_register_min_minutes=20,
         ),
-        moderation_chat=SimpleNamespace(suspicious_words=(), gif_domains=()),
+        moderation_chat=SimpleNamespace(
+            suspicious_words=(),
+            gif_domains=(),
+            automod_bypass_enabled=False,
+            automod_bypass_ignore=(),
+            collapse_repeats_min=3,
+        ),
         purge=SimpleNamespace(soft_limit=300),
     )
 

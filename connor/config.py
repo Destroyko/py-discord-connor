@@ -102,6 +102,9 @@ class VoicesConfig:
 class ModerationChatConfig:
     suspicious_words: tuple[str, ...]
     gif_domains: tuple[str, ...]
+    automod_bypass_enabled: bool
+    automod_bypass_ignore: tuple[str, ...]
+    collapse_repeats_min: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -288,9 +291,13 @@ def load_config(
     )
 
     mc = _load_toml(c, "moderation_chat.toml", cdir)
+    mc_path = "config/moderation_chat.toml"
     moderation_chat = ModerationChatConfig(
-        suspicious_words=c.toml_str_list(mc, "config/moderation_chat.toml", "suspicious_words"),
-        gif_domains=c.toml_str_list(mc, "config/moderation_chat.toml", "gif_domains"),
+        suspicious_words=c.toml_str_list(mc, mc_path, "suspicious_words"),
+        gif_domains=c.toml_str_list(mc, mc_path, "gif_domains"),
+        automod_bypass_enabled=c.toml_bool(mc, mc_path, "automod_bypass_enabled"),
+        automod_bypass_ignore=c.toml_str_list(mc, mc_path, "automod_bypass_ignore"),
+        collapse_repeats_min=c.toml_int(mc, mc_path, "collapse_repeats_min", minimum=2),
     )
 
     pg = _load_toml(c, "purge.toml", cdir)
