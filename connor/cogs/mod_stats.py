@@ -172,7 +172,7 @@ class _StatsView(discord.ui.View):
             return discord.Embed(title=self._title, description=self._empty)
         start = self._page * _PAGE
         lines = [
-            f"{start + i}. {member.mention} — {metric}"
+            f"{start + i}. {member.mention} - {metric}"
             for i, (member, metric) in enumerate(self._rows[start : start + _PAGE], 1)
         ]
         embed = discord.Embed(title=self._title, description="\n".join(lines))

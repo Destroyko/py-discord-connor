@@ -162,7 +162,7 @@ async def test_view_paginates_20_per_page() -> None:
     assert view._pages == 3
     first = view._embed().description.splitlines()
     assert len(first) == 20
-    assert first[0] == "1. <@1> — 99"
+    assert first[0] == "1. <@1> - 99"
     assert "стр. 1/3" in view._embed().footer.text
     assert "модераторов: 45" in view._embed().footer.text
     assert view._prev.disabled is True
@@ -177,7 +177,7 @@ async def test_view_next_prev_moves_page_and_toggles_buttons() -> None:
     it = _component_interaction()
     await _StatsView._next(view, it, None)
     assert view._page == 1
-    assert view._embed().description.splitlines()[0] == "21. <@21> — 21"
+    assert view._embed().description.splitlines()[0] == "21. <@21> - 21"
     it.response.edit_message.assert_awaited()  # кнопка отвечает сразу, без defer
 
     await _StatsView._next(view, it, None)
