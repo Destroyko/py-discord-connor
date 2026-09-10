@@ -60,7 +60,9 @@ _PERIOD_FOOTER = {
 _DEFAULT_PERIOD = "30"
 
 _Row = tuple[discord.Member, str]
-_Fetch = Callable[[discord.Guild, int], Awaitable[list[_Row]]]
+#: (guild, нижняя граница по времени, кэш резолва id → участник) → строки ладдера
+_ResolveCache = dict[int, discord.Member | None]
+_Fetch = Callable[[discord.Guild, int, _ResolveCache], Awaitable[list[_Row]]]
 
 
 def _since_ts(period: str) -> int:
@@ -70,10 +72,24 @@ def _since_ts(period: str) -> int:
     return 0 if days == 0 else int(utcnow().timestamp()) - days * 86400
 
 
-def _active_moderator(guild: discord.Guild, user_id: int) -> discord.Member | None:
+async def _active_moderator(
+    guild: discord.Guild, user_id: int, cache: _ResolveCache
+) -> discord.Member | None:
     """Участник сервера с правом ``moderate_members`` — иначе ``None`` (выбыл,
-    удалил аккаунт или лишён прав модерации)."""
-    member = guild.get_member(user_id)
+    удалил аккаунт или лишён прав модерации).
+
+    Член-кэш у бота частичный (см. bot.py) — ``get_member`` почти всегда ``None``,
+    поэтому фолбэк на ``fetch_member`` (запрос к API). Результат резолва кэшируется
+    на время жизни панели: пагинация и смена периода не дёргают API повторно."""
+    if user_id not in cache:
+        member = guild.get_member(user_id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(user_id)
+            except discord.HTTPException:
+                member = None
+        cache[user_id] = member
+    member = cache[user_id]
     if member is None or not member.guild_permissions.moderate_members:
         return None
     return member
@@ -92,17 +108,20 @@ class _StatsView(discord.ui.View):
         self._period = _DEFAULT_PERIOD
         self._page = 0
         self._rows: list[_Row] = []
+        self._resolved: _ResolveCache = {}
         self.message: discord.Message | None = None
 
     async def start(self, interaction: discord.Interaction) -> None:
+        """Вызывается после ``interaction.response.defer(ephemeral=True)`` —
+        резолв модераторов ходит в API, в 3 c ответа можно не уложиться."""
         await self._reload()
-        await interaction.response.send_message(
+        self.message = await interaction.followup.send(
             embed=self._embed(),
             view=self,
             ephemeral=True,
+            wait=True,
             allowed_mentions=discord.AllowedMentions.none(),
         )
-        self.message = await interaction.original_response()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self._invoker_id:
@@ -136,7 +155,7 @@ class _StatsView(discord.ui.View):
     # -- данные ----------------------------------------------------------------
 
     async def _reload(self) -> None:
-        self._rows = await self._fetch(self._guild, _since_ts(self._period))
+        self._rows = await self._fetch(self._guild, _since_ts(self._period), self._resolved)
         self._page = 0
         self._sync_buttons()
 
@@ -164,11 +183,20 @@ class _StatsView(discord.ui.View):
         return embed
 
     async def _rerender(self, interaction: discord.Interaction) -> None:
-        await interaction.response.edit_message(
-            embed=self._embed(),
-            view=self,
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
+        # кнопки отвечают сразу (edit_message); смена периода сначала делает defer
+        # под резолв модераторов — тогда правим уже через edit_original_response
+        if interaction.response.is_done():
+            await interaction.edit_original_response(
+                embed=self._embed(),
+                view=self,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        else:
+            await interaction.response.edit_message(
+                embed=self._embed(),
+                view=self,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
 
     # -- элементы ------------------------------------------------------------------
 
@@ -186,6 +214,7 @@ class _StatsView(discord.ui.View):
         self._period = select.values[0]
         for opt in select.options:
             opt.default = opt.value == self._period
+        await interaction.response.defer()  # резолв может ходить в API
         await self._reload()
         await self._rerender(interaction)
 
@@ -213,6 +242,7 @@ class ModStats(commands.Cog):
     @app_commands.default_permissions(moderate_members=True)
     async def mutestats(self, interaction: discord.Interaction) -> None:
         assert interaction.guild is not None
+        await interaction.response.defer(ephemeral=True)
         await _StatsView(
             invoker_id=interaction.user.id,
             guild=interaction.guild,
@@ -221,10 +251,12 @@ class ModStats(commands.Cog):
             fetch=self._mute_rows,
         ).start(interaction)
 
-    async def _mute_rows(self, guild: discord.Guild, since: int) -> list[_Row]:
+    async def _mute_rows(
+        self, guild: discord.Guild, since: int, cache: _ResolveCache
+    ) -> list[_Row]:
         rows: list[_Row] = []
         for mod_id, count in await self.mute_stats.ladder(since):
-            member = _active_moderator(guild, mod_id)
+            member = await _active_moderator(guild, mod_id, cache)
             if member is not None:
                 rows.append((member, str(count)))
         return rows
@@ -237,6 +269,7 @@ class ModStats(commands.Cog):
     @app_commands.default_permissions(moderate_members=True)
     async def givestats(self, interaction: discord.Interaction) -> None:
         assert interaction.guild is not None
+        await interaction.response.defer(ephemeral=True)
         await _StatsView(
             invoker_id=interaction.user.id,
             guild=interaction.guild,
@@ -245,10 +278,12 @@ class ModStats(commands.Cog):
             fetch=self._give_rows,
         ).start(interaction)
 
-    async def _give_rows(self, guild: discord.Guild, since: int) -> list[_Row]:
+    async def _give_rows(
+        self, guild: discord.Guild, since: int, cache: _ResolveCache
+    ) -> list[_Row]:
         rows: list[_Row] = []
         for tally in await self.give_stats.ladder(since):
-            member = _active_moderator(guild, tally.moderator_id)
+            member = await _active_moderator(guild, tally.moderator_id, cache)
             if member is not None:
                 rows.append((member, f"{tally.total} ({tally.approved}/{tally.refused})"))
         return rows
