@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import discord
 import pytest
+from discord import app_commands
+from discord.ext import commands
 
-from connor.bot import ConnorBot, _command_perms_check, meets_default_permissions, run_bot
+from connor.bot import (
+    UNEXPECTED_ERROR,
+    ConnorBot,
+    _command_perms_check,
+    meets_default_permissions,
+    run_bot,
+)
 from connor.core.permissions import CommandPermissionsCache
 
 
@@ -175,3 +184,77 @@ async def test_command_perms_check_consults_cache_for_known(bot: ConnorBot) -> N
         member_perms=discord.Permissions(moderate_members=True),
     )
     assert await _command_perms_check(allowed) is True
+
+
+# --- fallback-ответы на непойманные ошибки команд ----------------------------
+
+
+def _err_ctx() -> SimpleNamespace:
+    return SimpleNamespace(
+        command=SimpleNamespace(name="mute"),
+        author=SimpleNamespace(id=1),
+        channel=SimpleNamespace(id=2),
+        send=AsyncMock(),
+    )
+
+
+def _err_interaction(*, done: bool) -> SimpleNamespace:
+    return SimpleNamespace(
+        command=SimpleNamespace(name="mutestats"),
+        user=SimpleNamespace(id=1),
+        response=SimpleNamespace(is_done=lambda: done, send_message=AsyncMock()),
+        followup=SimpleNamespace(send=AsyncMock()),
+    )
+
+
+async def test_on_command_error_replies_russian_on_unexpected(bot: ConnorBot) -> None:
+    ctx = _err_ctx()
+    await bot.on_command_error(ctx, commands.CommandError("weird internal boom"))
+    ctx.send.assert_awaited_once_with(UNEXPECTED_ERROR)
+
+
+async def test_on_command_error_stays_silent_on_known(bot: ConnorBot) -> None:
+    ctx = _err_ctx()
+    for exc in (
+        commands.CommandNotFound(),
+        commands.CheckFailure(),
+        commands.UserInputError(),
+    ):
+        await bot.on_command_error(ctx, exc)
+    ctx.send.assert_not_awaited()
+
+
+async def test_on_command_error_swallows_send_failure(bot: ConnorBot) -> None:
+    ctx = _err_ctx()
+    ctx.send = AsyncMock(side_effect=discord.HTTPException(MagicMock(status=500), "x"))
+    await bot.on_command_error(ctx, commands.CommandError("boom"))  # не должно бросить
+
+
+async def test_app_command_error_replies_russian(bot: ConnorBot) -> None:
+    it = _err_interaction(done=False)
+    await bot._on_app_command_error(it, app_commands.AppCommandError("boom"))
+    it.response.send_message.assert_awaited_once()
+    assert it.response.send_message.await_args.args[0] == UNEXPECTED_ERROR
+    assert it.response.send_message.await_args.kwargs["ephemeral"] is True
+
+
+async def test_app_command_error_uses_followup_when_responded(bot: ConnorBot) -> None:
+    it = _err_interaction(done=True)
+    await bot._on_app_command_error(it, app_commands.AppCommandError("boom"))
+    it.followup.send.assert_awaited_once()
+    it.response.send_message.assert_not_awaited()
+
+
+async def test_app_command_error_silent_on_check_failure(bot: ConnorBot) -> None:
+    it = _err_interaction(done=False)
+    await bot._on_app_command_error(it, app_commands.CheckFailure("nope"))
+    it.response.send_message.assert_not_awaited()
+    it.followup.send.assert_not_awaited()
+
+
+async def test_app_command_error_swallows_send_failure(bot: ConnorBot) -> None:
+    it = _err_interaction(done=False)
+    it.response.send_message = AsyncMock(
+        side_effect=discord.HTTPException(MagicMock(status=500), "x")
+    )
+    await bot._on_app_command_error(it, app_commands.AppCommandError("boom"))  # не должно бросить

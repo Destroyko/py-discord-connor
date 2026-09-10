@@ -26,6 +26,7 @@ from connor.core.resolve import EntityResolver
 from connor.core.timefmt import fmt_short
 from connor.db.repo_anti import RepoAnti
 from connor.db.repo_give import RepoGive
+from connor.db.repo_give_stats import RepoGiveStats
 from connor.logging_setup import log_action_error
 
 if TYPE_CHECKING:
@@ -127,6 +128,7 @@ class RoleGiver(commands.Cog):
         self.bot = bot
         self.give_repo = RepoGive(bot.db)
         self.anti_repo = RepoAnti(bot.db)
+        self.stats_repo = RepoGiveStats(bot.db)
         self._resolver = EntityResolver(log)
 
     # -- helpers -----------------------------------------------------------------
@@ -207,6 +209,15 @@ class RoleGiver(commands.Cog):
         # атомарно «захватываем» заявку — кто первый, тот и решает
         if not await self.give_repo.remove(payload.message_id):
             return
+
+        # решение зафиксировано (для /givestats); фильтр «реагировавший — модератор»
+        # на выводе команды, здесь пишем любого не-бота
+        await self.stats_repo.record(
+            target_id=request.user_id,
+            moderator_id=payload.user_id,
+            decided_at=int(time()),
+            approved=approved,
+        )
 
         try:
             await self._resolve(payload, request.user_id, approved=approved)

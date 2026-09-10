@@ -26,6 +26,7 @@ from connor.core.texts import (
     REASON_NOT_GIVEN,
     SELF_MODERATION,
 )
+from connor.db.repo_mute_stats import RepoMuteStats
 from connor.db.repo_mute_watcher import RepoMuteWatcher
 from connor.db.repo_pending_mute import RepoPendingMute
 
@@ -179,10 +180,10 @@ async def test_mute_hierarchy() -> None:
     ctx.send.assert_awaited_once_with(_ERR_HIERARCHY)
 
 
-async def test_mute_first_time_applies_timeout_role_dm_embed() -> None:
+async def test_mute_first_time_applies_timeout_role_dm_embed(db) -> None:
     member = _member(2, pos=1)
     ctx = _ctx(members={2: member})
-    cog = await _mute(ctx, "2", "24h", "п11")
+    cog = await _mute(ctx, "2", "24h", "п11", cog=_cog(db))
 
     member.timeout.assert_awaited_once()
     member.add_roles.assert_awaited_once()
@@ -191,13 +192,27 @@ async def test_mute_first_time_applies_timeout_role_dm_embed() -> None:
     assert embed.description == "<@2> замьючен на 24h"
     assert embed.fields[0].value == "п11"
     assert cog.state.last_time(2) == "24h"
+    # свежий мут попал в статистику за автором команды (id=1)
+    assert await RepoMuteStats(db).ladder(0) == [(1, 1)]
 
 
-async def test_mute_default_reason() -> None:
+async def test_mute_default_reason(db) -> None:
     member = _member(2, pos=1)
     ctx = _ctx(members={2: member})
-    await _mute(ctx, "2", "24h")
+    await _mute(ctx, "2", "24h", cog=_cog(db))
     assert ctx.send.await_args.kwargs["embed"].fields[0].value == REASON_NOT_GIVEN
+
+
+async def test_mute_update_does_not_add_stat_row(db) -> None:
+    member = _member(2, pos=1, timed_out=True)
+    ctx = _ctx(members={2: member})
+    cog = _cog(db)
+    cog.state.begin(2, owner_id=1, now=0.0, time_str="1h")  # окно истекло → обновление разрешено
+
+    await _mute(ctx, "2", "48h", cog=cog)
+
+    member.timeout.assert_awaited_once()
+    assert await RepoMuteStats(db).ladder(0) == []  # обновление длительности строк не добавляет
 
 
 async def test_mute_update_blocked_by_reservation() -> None:
@@ -307,6 +322,8 @@ async def test_pending_applied_on_join_indistinguishable_from_normal_mute(db) ->
     assert ch_embed.fields[0].value == "п12"
     assert await RepoPendingMute(db).get(5) is None  # запись снята
     assert cog.state.last_time(5) == "24h"
+    # засчитано за модератором, поставившим в очередь
+    assert await RepoMuteStats(db).ladder(0) == [(1, 1)]
 
 
 async def test_pending_apply_resolves_moderator_via_fetch_member(db) -> None:
@@ -367,6 +384,29 @@ async def test_pending_join_timeout_failure_keeps_record(db) -> None:
     await Mute.on_member_join(cog, member)
 
     assert await RepoPendingMute(db).get(5) is not None  # не удалили — попробуем позже
+    assert await RepoMuteStats(db).ladder(0) == []  # наказание не наложено → в статистику не пишем
+
+
+async def test_pending_apply_records_stat_even_if_log_send_fails(db) -> None:
+    await RepoPendingMute(db).upsert(5, duration="24h", reason="п", moderator_id=1, queued_at=100)
+    bot_komandy = SimpleNamespace(
+        send=AsyncMock(side_effect=discord.HTTPException(MagicMock(status=500), "boom"))
+    )
+    guild = SimpleNamespace(
+        name="Коннор",
+        get_member=lambda _i: None,
+        get_role=lambda _i: SimpleNamespace(id=111),
+        fetch_member=AsyncMock(side_effect=discord.NotFound(MagicMock(status=404), "gone")),
+    )
+    member = _member(5)
+    member.guild = guild
+    cog = Mute(_pending_bot(db, bot_komandy=bot_komandy, fetch_user_ok=False))  # type: ignore[arg-type]
+
+    await Mute.on_member_join(cog, member)
+
+    member.timeout.assert_awaited_once()
+    assert await RepoPendingMute(db).get(5) is None  # наказание наложено, запись снята
+    assert await RepoMuteStats(db).ladder(0) == [(1, 1)]  # и учтено, несмотря на сбой лог-сообщения
 
 
 async def test_unmute_absent_cancels_pending(db) -> None:
@@ -595,3 +635,84 @@ async def test_manual_poll_actor_not_found_logs_and_skips(db) -> None:
 
     channel.send.assert_not_awaited()
     assert await RepoMuteWatcher(db).get_cursor() == 2
+
+
+# --- статистика /mutestats: запись и вычёркивание по удалённому логу ----------
+
+
+async def test_manual_mute_via_ui_records_stat(db) -> None:
+    await RepoMuteWatcher(db).set_cursor(1)
+    channel = SimpleNamespace(send=AsyncMock())
+    cog = Mute(_watch_bot(db, bot_komandy=channel))  # type: ignore[arg-type]
+    entry = _watch_entry(
+        entry_id=2, target_id=5, actor_id=7, after_until=utcnow() + timedelta(hours=1)
+    )
+
+    await _poll_manual(cog, _watch_guild(entries=[entry]))
+
+    assert await RepoMuteStats(db).ladder(0) == [(7, 1)]
+
+
+async def test_manual_mute_via_ui_records_without_bot_komandy(db) -> None:
+    await RepoMuteWatcher(db).set_cursor(1)
+    cog = Mute(_watch_bot(db))  # #бот-команды не резолвится
+    entry = _watch_entry(
+        entry_id=2, target_id=5, actor_id=7, after_until=utcnow() + timedelta(hours=1)
+    )
+
+    await _poll_manual(cog, _watch_guild(entries=[entry]))
+
+    assert await RepoMuteStats(db).ladder(0) == [(7, 1)]  # мут реален → учтён и без лог-канала
+
+
+async def test_manual_mute_via_ui_records_when_log_send_fails(db) -> None:
+    await RepoMuteWatcher(db).set_cursor(1)
+    channel = SimpleNamespace(
+        send=AsyncMock(side_effect=discord.HTTPException(MagicMock(status=500), "boom"))
+    )
+    cog = Mute(_watch_bot(db, bot_komandy=channel))  # type: ignore[arg-type]
+    entry = _watch_entry(
+        entry_id=2, target_id=5, actor_id=7, after_until=utcnow() + timedelta(hours=1)
+    )
+
+    await _poll_manual(cog, _watch_guild(entries=[entry]))
+
+    assert await RepoMuteStats(db).ladder(0) == [(7, 1)]
+    assert await RepoMuteWatcher(db).get_cursor() == 2  # курсор двигается, запись не застревает
+
+
+async def test_manual_unmute_via_ui_does_not_touch_stats(db) -> None:
+    await RepoMuteWatcher(db).set_cursor(1)
+    await RepoMuteStats(db).record(
+        target_id=5, moderator_id=1, created_at=100, message_id=555, channel_id=9
+    )
+    channel = SimpleNamespace(send=AsyncMock())
+    cog = Mute(_watch_bot(db, bot_komandy=channel))  # type: ignore[arg-type]
+    entry = _watch_entry(entry_id=2, target_id=5, actor_id=7, before_until=utcnow())
+
+    await _poll_manual(cog, _watch_guild(entries=[entry]))
+
+    # ручной анмут не вычёркивает и не добавляет — мут остаётся засчитан
+    assert await RepoMuteStats(db).ladder(0) == [(1, 1)]
+
+
+async def test_raw_message_delete_strikes_matching_mute(db) -> None:
+    await RepoMuteStats(db).record(
+        target_id=2, moderator_id=1, created_at=100, message_id=555, channel_id=9
+    )
+    cog = _cog(db)
+
+    await Mute.on_raw_message_delete(cog, SimpleNamespace(guild_id=1, message_id=555, channel_id=9))
+
+    assert await RepoMuteStats(db).ladder(0) == []
+
+
+async def test_raw_message_delete_from_other_guild_is_ignored(db) -> None:
+    await RepoMuteStats(db).record(
+        target_id=2, moderator_id=1, created_at=100, message_id=555, channel_id=9
+    )
+    cog = _cog(db)
+
+    await Mute.on_raw_message_delete(cog, SimpleNamespace(guild_id=2, message_id=555, channel_id=9))
+
+    assert await RepoMuteStats(db).ladder(0) == [(1, 1)]

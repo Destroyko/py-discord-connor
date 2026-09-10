@@ -18,6 +18,8 @@ _EXPECTED_TABLES = {
     "voice_cycle",
     "anti_watcher_cursor",
     "mute_watcher_cursor",
+    "mute_events",
+    "give_decisions",
 }
 
 
@@ -30,7 +32,7 @@ async def test_migrations_apply_on_fresh_file(db: Database) -> None:
     assert _EXPECTED_TABLES.issubset(await _table_names(db))
     async with db.conn.execute("SELECT version FROM schema_version") as cur:
         versions = {row[0] for row in await cur.fetchall()}
-    assert versions == {1, 2, 3, 4}
+    assert versions == {1, 2, 3, 4, 5, 6}
 
 
 async def test_ping_ok(db: Database) -> None:
@@ -49,7 +51,7 @@ async def test_reconnect_is_noop(tmp_path: Path) -> None:
 
     first = Database(path)
     await first.connect()
-    assert first.applied_migrations == [1, 2, 3, 4]
+    assert first.applied_migrations == [1, 2, 3, 4, 5, 6]
     await first.close()
 
     second = Database(path)

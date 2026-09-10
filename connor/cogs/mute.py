@@ -40,6 +40,7 @@ from connor.core.resolve import EntityResolver
 from connor.core.targets import parse_target_id
 from connor.core.texts import ERR_NO_TARGET, ERR_TARGET_ABSENT, REASON_NOT_GIVEN, SELF_MODERATION
 from connor.core.timefmt import fmt_full, format_remaining_coarse, parse_mute_duration
+from connor.db.repo_mute_stats import RepoMuteStats
 from connor.db.repo_mute_watcher import RepoMuteWatcher
 from connor.db.repo_pending_mute import RepoPendingMute
 from connor.logging_setup import log_action_error
@@ -143,12 +144,22 @@ def _remaining_str(member: discord.Member) -> str:
     return format_remaining_coarse(int((until - utcnow()).total_seconds()))
 
 
+def _msg_ref(msg: object) -> tuple[int | None, int | None]:
+    """``(message_id, channel_id)`` из результата ``send``. Оба ``None``, если
+    сообщение получить не удалось — тогда мут в статистике уже не вычеркнуть
+    удалением лога (см. mute.md, раздел «Статистика»), но само наказание считается."""
+    mid = getattr(msg, "id", None)
+    cid = getattr(getattr(msg, "channel", None), "id", None)
+    return (mid if isinstance(mid, int) else None, cid if isinstance(cid, int) else None)
+
+
 class Mute(commands.Cog):
     def __init__(self, bot: ConnorBot) -> None:
         self.bot = bot
         self.state = MuteState()
         self.pending_repo = RepoPendingMute(bot.db)
         self.watcher_repo = RepoMuteWatcher(bot.db)
+        self.stats_repo = RepoMuteStats(bot.db)
         self._resolver = EntityResolver(log)  # реконсиляция дёргается часто — лог 1 раз на id
         self._pending_startup_done = False
 
@@ -196,6 +207,18 @@ class Mute(commands.Cog):
             await member.send(text)
         except discord.HTTPException:
             log.info("DM об анмуте не доставлено (%s, %d): ЛС закрыты", member, member.id)
+
+    async def _record_mute_stat(self, target_id: int, moderator_id: int, log_msg: object) -> None:
+        """Зафиксировать свежий мут для ``/mutestats``. Обновление длительности
+        сюда не попадает — наказание остаётся за первым выдавшим."""
+        message_id, channel_id = _msg_ref(log_msg)
+        await self.stats_repo.record(
+            target_id=target_id,
+            moderator_id=moderator_id,
+            created_at=int(utcnow().timestamp()),
+            message_id=message_id,
+            channel_id=channel_id,
+        )
 
     async def _reconcile_stale_role(self, member: discord.Member) -> None:
         """Напр.1: роль «Молчун» есть, активного таймаута нет → снять роль."""
@@ -291,7 +314,7 @@ class Mute(commands.Cog):
                 updated=updated,
             ),
         )
-        await ctx.send(
+        sent = await ctx.send(
             embed=build_mute_channel_embed(
                 mod_name=embed_author_name(ctx.author),
                 mod_icon=embed_author_icon(ctx.author),
@@ -302,6 +325,8 @@ class Mute(commands.Cog):
                 old_time=old_time,
             )
         )
+        if not updated:
+            await self._record_mute_stat(member.id, ctx.author.id, sent)
 
     # -- отложенный мут (цель вышла до наказания) ----------------------------
 
@@ -374,21 +399,27 @@ class Mute(commands.Cog):
         )
         actor = await self._resolve_actor(guild, entry.moderator_id)
         channel = self._bot_komandy()
+        sent = None
         if channel is not None:
-            await channel.send(
-                embed=build_mute_channel_embed(
-                    mod_name=(
-                        embed_author_name(actor)
-                        if actor is not None
-                        else str(entry.moderator_id)
-                    ),
-                    mod_icon=(embed_author_icon(actor) if actor is not None else None),
-                    mention=member.mention,
-                    time_str=entry.duration,
-                    reason=entry.reason,
-                    updated=False,
+            try:
+                sent = await channel.send(
+                    embed=build_mute_channel_embed(
+                        mod_name=(
+                            embed_author_name(actor)
+                            if actor is not None
+                            else str(entry.moderator_id)
+                        ),
+                        mod_icon=(embed_author_icon(actor) if actor is not None else None),
+                        mention=member.mention,
+                        time_str=entry.duration,
+                        reason=entry.reason,
+                        updated=False,
+                    )
                 )
-            )
+            except discord.HTTPException:
+                log_action_error(log, "лог отложенного мута в #бот-команды", target=member)
+        # наказание уже наложено — фиксируем его независимо от того, отправился лог
+        await self._record_mute_stat(member.id, entry.moderator_id, sent)
         return True
 
     async def _resolve_actor(
@@ -544,19 +575,24 @@ class Mute(commands.Cog):
         reason: str | None,
     ) -> None:
         channel = self._bot_komandy()
-        if channel is None:
-            return
-        remaining = int((until - utcnow()).total_seconds())
-        await channel.send(
-            embed=build_mute_channel_embed(
-                mod_name=embed_author_name(actor),
-                mod_icon=embed_author_icon(actor),
-                mention=f"<@{target.id}>",
-                time_str=format_remaining_coarse(remaining),
-                reason=reason or REASON_NOT_GIVEN,
-                updated=False,
-            )
-        )
+        sent = None
+        if channel is not None:
+            remaining = int((until - utcnow()).total_seconds())
+            try:
+                sent = await channel.send(
+                    embed=build_mute_channel_embed(
+                        mod_name=embed_author_name(actor),
+                        mod_icon=embed_author_icon(actor),
+                        mention=f"<@{target.id}>",
+                        time_str=format_remaining_coarse(remaining),
+                        reason=reason or REASON_NOT_GIVEN,
+                        updated=False,
+                    )
+                )
+            except discord.HTTPException:
+                log_action_error(log, "лог ручного мута в #бот-команды", target=target)
+        # мут реально стоит (подтверждён audit log) — учитываем даже без лог-канала
+        await self._record_mute_stat(target.id, actor.id, sent)
 
     async def _on_manual_unmute(
         self,
@@ -574,6 +610,17 @@ class Mute(commands.Cog):
                 mention=f"<@{target.id}>",
             )
         )
+
+    # -- статистика мьютов: вычёркивание строки при удалении лог-сообщения ----------
+
+    @commands.Cog.listener()
+    async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent) -> None:
+        """Одиночное удаление лог-сообщения о муте (кем угодно) → наказание больше
+        не считается в ``/mutestats``. Массовые удаления (``!purge``) сюда не
+        приходят — по замыслу учитываем только точечное удаление."""
+        if payload.guild_id != self.bot.config.guild_id:
+            return
+        await self.stats_repo.strike_by_message(payload.message_id, int(utcnow().timestamp()))
 
     # -- /unmute -------------------------------------------------------------------
 

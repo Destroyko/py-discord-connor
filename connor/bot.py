@@ -26,6 +26,7 @@ import logging
 import time
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 from connor.config import Config
@@ -35,6 +36,10 @@ from connor.core.permissions import CommandPermissionsCache
 from connor.db import Database
 
 log = logging.getLogger(__name__)
+
+#: Fallback-ответ на непойманную ошибку команды — короткий русский текст вместо
+#: служебного «This interaction failed» / тишины (см. rules.md «Видимость ответов»).
+UNEXPECTED_ERROR = "Что-то пошло не так — команда не выполнена. Попробуйте позже."
 
 #: Пути когов для ``load_extension``. Каждый модуль добавляет себя в своей фазе.
 COGS: tuple[str, ...] = (
@@ -46,6 +51,7 @@ COGS: tuple[str, ...] = (
     "connor.cogs.anti",
     "connor.cogs.check",
     "connor.cogs.role_giver",
+    "connor.cogs.mod_stats",
     "connor.cogs.voices_rooms",
     "connor.cogs.voices_selfmod",
     "connor.cogs.voices_xp",
@@ -149,6 +155,9 @@ class ConnorBot(commands.Bot):
 
         self.add_check(_dm_guard_check)
         self.add_check(_command_perms_check)
+        # непойманные ошибки slash-команд (в т.ч. чистых app-command'ов вроде
+        # /healthcheck, /mutestats) — иначе Discord показывает «This interaction failed»
+        self.tree.on_error = self._on_app_command_error
 
     async def on_command_error(
         self, context: commands.Context, exception: commands.CommandError
@@ -171,6 +180,34 @@ class ConnorBot(commands.Bot):
             exception,
             exc_info=exception,
         )
+        # …и отвечаем модератору по-русски, а не оставляем команду молча висеть
+        try:
+            await context.send(UNEXPECTED_ERROR)
+        except discord.HTTPException:
+            pass
+
+    async def _on_app_command_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ) -> None:
+        # Блокировки (нет прав, не в гильдии) — молча, как в on_command_error.
+        original = getattr(error, "original", error)
+        if isinstance(error, app_commands.CheckFailure):
+            return
+        cmd = interaction.command.name if interaction.command else "?"
+        log.error(
+            "ошибка slash-команды /%s (вызвал %s): %s",
+            cmd,
+            interaction.user,
+            original,
+            exc_info=original,
+        )
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(UNEXPECTED_ERROR, ephemeral=True)
+            else:
+                await interaction.response.send_message(UNEXPECTED_ERROR, ephemeral=True)
+        except discord.HTTPException:
+            pass
 
     async def setup_hook(self) -> None:
         await self.db.connect()  # прогон миграций; ошибка здесь = бот не поднялся (exit 1)

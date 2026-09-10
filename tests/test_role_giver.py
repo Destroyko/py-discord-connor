@@ -21,6 +21,7 @@ from connor.cogs.role_giver import (
 from connor.db import Database
 from connor.db.repo_anti import RepoAnti
 from connor.db.repo_give import RepoGive
+from connor.db.repo_give_stats import RepoGiveStats
 
 _CFG = SimpleNamespace(
     account_min_age_days=180, member_min_tenure_days=14, join_after_register_min_minutes=20
@@ -290,6 +291,9 @@ async def test_reaction_approve_grants_and_logs(db: Database) -> None:
     assert "роль выдана." in vydacha.send.await_args.args[0]
     audit.send.assert_awaited_once()
     assert await RepoGive(db).get(777) is None  # заявка снята
+    # решение учтено для /givestats за реагировавшим (user_id=7 в _payload)
+    tally = await RepoGiveStats(db).ladder(0)
+    assert [(t.moderator_id, t.total, t.approved, t.refused) for t in tally] == [(7, 1, 1, 0)]
 
 
 async def test_reaction_approve_grant_fails_no_announcements(db: Database) -> None:
@@ -342,6 +346,32 @@ async def test_reaction_race_second_is_noop(db: Database) -> None:
     await RoleGiver.on_raw_reaction_add(cog, _payload(message_id=777, emoji="❌"))
 
     assert target.add_roles.await_count == calls_after_first  # вторая реакция — no-op
+    tally = await RepoGiveStats(db).ladder(0)
+    assert sum(t.total for t in tally) == 1  # проигравшая гонку реакция в статистику не пишется
+
+
+async def test_reaction_refusal_recorded_for_stats(db: Database) -> None:
+    await RepoGive(db).add(778, user_id=6, created_at=1)
+    target = MagicMock(spec=discord.Member)
+    target.id = 6
+    target.mention = "<@6>"
+    target.add_roles = AsyncMock()
+    guild = SimpleNamespace(
+        get_role=lambda _i: MagicMock(spec=discord.Role),
+        fetch_member=AsyncMock(return_value=target),
+    )
+    bot = _bot(db)
+    bot.get_guild = lambda _i: guild
+    bot.get_channel = lambda _c: SimpleNamespace(
+        send=AsyncMock(), get_partial_message=lambda _m: SimpleNamespace(delete=AsyncMock())
+    )
+
+    await RoleGiver.on_raw_reaction_add(
+        RoleGiver(bot), _payload(message_id=778, emoji="❌", user_id=9)
+    )
+
+    tally = await RepoGiveStats(db).ladder(0)
+    assert [(t.moderator_id, t.total, t.approved, t.refused) for t in tally] == [(9, 1, 0, 1)]
 
 
 async def test_reaction_ignores_bot_own_and_unknown_emoji(db: Database) -> None:
