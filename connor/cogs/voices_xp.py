@@ -209,10 +209,11 @@ class VoicesXp(commands.Cog):
                     log_action_error(log, "выдать роль «Душа компании»", target=awardee)
 
             if fludislavl is not None and awardee is not None:
+                role_display = role.mention if role is not None else "«Душа компании»"
                 await fludislavl.send(
-                    f"Роль @Душа компании получает {awardee.mention}, "
+                    f"Роль {role_display} получает {awardee.mention}, "
                     f"разница со вторым местом составила {margin} экспы",
-                    allowed_mentions=discord.AllowedMentions(users=[awardee]),
+                    allowed_mentions=discord.AllowedMentions(users=[awardee], roles=False),
                 )
             new_dusha: int | None = awardee_id
         else:
