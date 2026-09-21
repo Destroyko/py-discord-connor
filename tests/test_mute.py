@@ -26,6 +26,7 @@ from connor.core.texts import (
     REASON_NOT_GIVEN,
     SELF_MODERATION,
 )
+from connor.db.repo_molchun_role_watcher import RepoMolchunRoleWatcher
 from connor.db.repo_mute_stats import RepoMuteStats
 from connor.db.repo_mute_watcher import RepoMuteWatcher
 from connor.db.repo_pending_mute import RepoPendingMute
@@ -694,6 +695,281 @@ async def test_manual_unmute_via_ui_does_not_touch_stats(db) -> None:
 
     # ручной анмут не вычёркивает и не добавляет — мут остаётся засчитан
     assert await RepoMuteStats(db).ladder(0) == [(1, 1)]
+
+
+# --- вотчер: ручная выдача/снятие роли «Молчун» владельцем (опрос audit log) --
+
+# id владельца сервера заведомо не совпадает с _BOT_ID (999): иначе записи
+# «от владельца» отсекались бы проверкой «действие совершил сам бот»
+_OWNER_ID = 500
+
+
+def _role_entry(
+    *,
+    entry_id: int,
+    target_id: int,
+    actor_id: int | None,
+    before_role_ids: tuple[int, ...] = (),
+    after_role_ids: tuple[int, ...] = (),
+) -> SimpleNamespace:
+    user = (
+        None
+        if actor_id is None
+        else SimpleNamespace(
+            id=actor_id, name=f"mod{actor_id}", display_avatar=SimpleNamespace(url="u")
+        )
+    )
+    return SimpleNamespace(
+        id=entry_id,
+        user_id=actor_id,
+        user=user,
+        target=SimpleNamespace(id=target_id),
+        before=SimpleNamespace(roles=[SimpleNamespace(id=r) for r in before_role_ids]),
+        after=SimpleNamespace(roles=[SimpleNamespace(id=r) for r in after_role_ids]),
+    )
+
+
+def _role_guild(
+    *,
+    entries: list[object],
+    latest: list[object] = (),
+    owner_id: int = _OWNER_ID,
+    members: dict[int, SimpleNamespace] | None = None,
+) -> SimpleNamespace:
+    members = members or {}
+
+    def audit_logs(**kw):
+        if kw.get("limit") == 1 and "action" not in kw:
+            return _audit_iter(list(latest))
+        return _audit_iter(entries)
+
+    async def fetch_member(i: int) -> SimpleNamespace:
+        member = members.get(i)
+        if member is None:
+            raise discord.NotFound(SimpleNamespace(status=404, reason="x"), "no")
+        return member
+
+    return SimpleNamespace(
+        name="Коннор",
+        owner_id=owner_id,
+        get_member=lambda i: members.get(i),
+        fetch_member=fetch_member,
+        audit_logs=audit_logs,
+    )
+
+
+async def _poll_role(cog: Mute, guild: object) -> None:
+    await Mute._poll_molchun_role_once(cog, guild)
+
+
+async def test_molchun_role_poll_first_run_seeds_cursor_without_processing(db) -> None:
+    channel = SimpleNamespace(send=AsyncMock())
+    entry = _role_entry(entry_id=42, target_id=5, actor_id=_OWNER_ID, after_role_ids=(111,))
+    cog = Mute(_watch_bot(db, bot_komandy=channel))  # type: ignore[arg-type]
+    member = _member(5)
+    g = _role_guild(entries=[entry], latest=[entry], members={5: member})
+
+    await _poll_role(cog, g)
+
+    member.timeout.assert_not_awaited()
+    channel.send.assert_not_awaited()
+    assert await RepoMolchunRoleWatcher(db).get_cursor() == 42
+
+
+async def test_molchun_role_poll_first_run_no_history_leaves_cursor_unset(db) -> None:
+    cog = Mute(_watch_bot(db))  # type: ignore[arg-type]
+    g = _role_guild(entries=[], latest=[])
+
+    await _poll_role(cog, g)
+
+    assert await RepoMolchunRoleWatcher(db).get_cursor() is None
+
+
+async def test_molchun_role_poll_ignores_change_by_bot(db) -> None:
+    await RepoMolchunRoleWatcher(db).set_cursor(1)
+    member = _member(5)
+    cog = Mute(_watch_bot(db))  # type: ignore[arg-type]
+    entry = _role_entry(entry_id=2, target_id=5, actor_id=_BOT_ID, after_role_ids=(111,))
+
+    await _poll_role(cog, _role_guild(entries=[entry], members={5: member}))
+
+    member.timeout.assert_not_awaited()
+    assert await RepoMolchunRoleWatcher(db).get_cursor() == 2
+
+
+async def test_molchun_role_poll_ignores_change_by_non_owner(db) -> None:
+    await RepoMolchunRoleWatcher(db).set_cursor(1)
+    member = _member(5)
+    cog = Mute(_watch_bot(db))  # type: ignore[arg-type]
+    entry = _role_entry(entry_id=2, target_id=5, actor_id=7, after_role_ids=(111,))
+
+    await _poll_role(cog, _role_guild(entries=[entry], members={5: member}))
+
+    member.timeout.assert_not_awaited()
+    assert await RepoMolchunRoleWatcher(db).get_cursor() == 2
+
+
+async def test_molchun_role_poll_actor_not_found_logs_and_skips(db) -> None:
+    await RepoMolchunRoleWatcher(db).set_cursor(1)
+    member = _member(5)
+    cog = Mute(_watch_bot(db))  # type: ignore[arg-type]
+    entry = _role_entry(entry_id=2, target_id=5, actor_id=None, after_role_ids=(111,))
+
+    await _poll_role(cog, _role_guild(entries=[entry], members={5: member}))
+
+    member.timeout.assert_not_awaited()
+    assert await RepoMolchunRoleWatcher(db).get_cursor() == 2
+
+
+async def test_molchun_role_poll_ignores_unrelated_role_change(db) -> None:
+    await RepoMolchunRoleWatcher(db).set_cursor(1)
+    member = _member(5)
+    cog = Mute(_watch_bot(db))  # type: ignore[arg-type]
+    entry = _role_entry(entry_id=2, target_id=5, actor_id=_OWNER_ID, after_role_ids=(222,))
+
+    await _poll_role(cog, _role_guild(entries=[entry], members={5: member}))
+
+    member.timeout.assert_not_awaited()
+    assert await RepoMolchunRoleWatcher(db).get_cursor() == 2
+
+
+async def test_owner_grants_molchun_role_mutes_member(db) -> None:
+    await RepoMolchunRoleWatcher(db).set_cursor(1)
+    channel = SimpleNamespace(send=AsyncMock())
+    member = _member(5)
+    cog = Mute(_watch_bot(db, bot_komandy=channel))  # type: ignore[arg-type]
+    entry = _role_entry(entry_id=2, target_id=5, actor_id=_OWNER_ID, after_role_ids=(111,))
+
+    await _poll_role(cog, _role_guild(entries=[entry], members={5: member}))
+
+    member.timeout.assert_awaited_once()
+    assert member.timeout.await_args.args[0] == timedelta(days=7)
+    member.send.assert_awaited_once()
+    embed = channel.send.await_args.kwargs["embed"]
+    assert embed.description == "<@5> замьючен на 7d"
+    assert embed.fields[0].value == "Приказ 66"
+    assert cog.state.last_time(5) == "7d"
+    assert await RepoMuteStats(db).ladder(0) == [(_OWNER_ID, 1)]
+
+
+async def test_owner_grants_molchun_role_ignores_bot_target(db) -> None:
+    await RepoMolchunRoleWatcher(db).set_cursor(1)
+    member = _member(5, bot=True)
+    cog = Mute(_watch_bot(db))  # type: ignore[arg-type]
+    entry = _role_entry(entry_id=2, target_id=5, actor_id=_OWNER_ID, after_role_ids=(111,))
+
+    await _poll_role(cog, _role_guild(entries=[entry], members={5: member}))
+
+    member.timeout.assert_not_awaited()
+
+
+async def test_owner_grants_molchun_role_ignores_self_moderation(db) -> None:
+    await RepoMolchunRoleWatcher(db).set_cursor(1)
+    member = _member(_OWNER_ID)
+    cog = Mute(_watch_bot(db))  # type: ignore[arg-type]
+    entry = _role_entry(entry_id=2, target_id=_OWNER_ID, actor_id=_OWNER_ID, after_role_ids=(111,))
+
+    await _poll_role(cog, _role_guild(entries=[entry], members={_OWNER_ID: member}))
+
+    member.timeout.assert_not_awaited()
+
+
+async def test_owner_grants_molchun_role_skips_already_timed_out(db) -> None:
+    await RepoMolchunRoleWatcher(db).set_cursor(1)
+    member = _member(5, timed_out=True)
+    cog = Mute(_watch_bot(db))  # type: ignore[arg-type]
+    entry = _role_entry(entry_id=2, target_id=5, actor_id=_OWNER_ID, after_role_ids=(111,))
+
+    await _poll_role(cog, _role_guild(entries=[entry], members={5: member}))
+
+    member.timeout.assert_not_awaited()
+
+
+async def test_owner_grants_molchun_role_target_absent_logs_and_skips(db) -> None:
+    await RepoMolchunRoleWatcher(db).set_cursor(1)
+    cog = Mute(_watch_bot(db))  # type: ignore[arg-type]
+    entry = _role_entry(entry_id=2, target_id=5, actor_id=_OWNER_ID, after_role_ids=(111,))
+
+    await _poll_role(cog, _role_guild(entries=[entry], members={}))
+
+    assert await RepoMuteStats(db).ladder(0) == []
+    assert await RepoMolchunRoleWatcher(db).get_cursor() == 2
+
+
+async def test_owner_removes_molchun_role_unmutes_member(db) -> None:
+    await RepoMolchunRoleWatcher(db).set_cursor(1)
+    channel = SimpleNamespace(send=AsyncMock())
+    member = _member(5, timed_out=True)
+    cog = Mute(_watch_bot(db, bot_komandy=channel))  # type: ignore[arg-type]
+    cog.state.begin(5, owner_id=_OWNER_ID, now=0.0, time_str="7d")
+    entry = _role_entry(entry_id=2, target_id=5, actor_id=_OWNER_ID, before_role_ids=(111,))
+
+    await _poll_role(cog, _role_guild(entries=[entry], members={5: member}))
+
+    member.timeout.assert_awaited_once()
+    assert member.timeout.await_args.args[0] is None
+    assert "снятие мута" in member.timeout.await_args.kwargs["reason"]
+    member.send.assert_awaited_once_with('Ограничения на сервере "Коннор" сняты')
+    embed = channel.send.await_args.kwargs["embed"]
+    assert embed.description == "<@5> размьючен"
+    assert cog.state.last_time(5) is None
+
+
+async def test_owner_removes_molchun_role_noop_without_active_timeout(db) -> None:
+    await RepoMolchunRoleWatcher(db).set_cursor(1)
+    channel = SimpleNamespace(send=AsyncMock())
+    member = _member(5, timed_out=False)
+    cog = Mute(_watch_bot(db, bot_komandy=channel))  # type: ignore[arg-type]
+    entry = _role_entry(entry_id=2, target_id=5, actor_id=_OWNER_ID, before_role_ids=(111,))
+
+    await _poll_role(cog, _role_guild(entries=[entry], members={5: member}))
+
+    member.timeout.assert_not_awaited()
+    channel.send.assert_not_awaited()
+
+
+async def test_owner_removes_molchun_role_target_absent_clears_pending(db) -> None:
+    await RepoMolchunRoleWatcher(db).set_cursor(1)
+    await RepoPendingMute(db).upsert(5, duration="1h", reason="x", moderator_id=1, queued_at=1)
+    cog = Mute(_watch_bot(db))  # type: ignore[arg-type]
+    entry = _role_entry(entry_id=2, target_id=5, actor_id=_OWNER_ID, before_role_ids=(111,))
+
+    await _poll_role(cog, _role_guild(entries=[entry], members={}))
+
+    assert await RepoPendingMute(db).get(5) is None
+
+
+async def test_owner_grants_molchun_role_forbidden_skips_and_logs(db) -> None:
+    await RepoMolchunRoleWatcher(db).set_cursor(1)
+    channel = SimpleNamespace(send=AsyncMock())
+    member = _member(5)
+    member.timeout = AsyncMock(side_effect=discord.Forbidden(MagicMock(status=403), "no"))
+    cog = Mute(_watch_bot(db, bot_komandy=channel))  # type: ignore[arg-type]
+    entry = _role_entry(entry_id=2, target_id=5, actor_id=_OWNER_ID, after_role_ids=(111,))
+
+    await _poll_role(cog, _role_guild(entries=[entry], members={5: member}))
+
+    channel.send.assert_not_awaited()
+    assert cog.state.last_time(5) is None
+    assert await RepoMuteStats(db).ladder(0) == []
+    assert await RepoMolchunRoleWatcher(db).get_cursor() == 2
+
+
+async def test_owner_removes_molchun_role_forbidden_keeps_state(db) -> None:
+    await RepoMolchunRoleWatcher(db).set_cursor(1)
+    channel = SimpleNamespace(send=AsyncMock())
+    member = _member(5, timed_out=True)
+    member.timeout = AsyncMock(side_effect=discord.Forbidden(MagicMock(status=403), "no"))
+    cog = Mute(_watch_bot(db, bot_komandy=channel))  # type: ignore[arg-type]
+    cog.state.begin(5, owner_id=_OWNER_ID, now=0.0, time_str="7d")
+    entry = _role_entry(entry_id=2, target_id=5, actor_id=_OWNER_ID, before_role_ids=(111,))
+
+    await _poll_role(cog, _role_guild(entries=[entry], members={5: member}))
+
+    member.send.assert_not_awaited()
+    channel.send.assert_not_awaited()
+    assert cog.state.last_time(5) == "7d"  # таймаут реально не снят — цикл не закрываем
+    assert await RepoMolchunRoleWatcher(db).get_cursor() == 2
 
 
 async def test_raw_message_delete_strikes_matching_mute(db) -> None:

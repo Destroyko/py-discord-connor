@@ -8,6 +8,9 @@
 - напр.1 (роль есть, таймаута нет) — чиним на ``on_message`` и на входе в войс;
 - напр.2 (таймаут есть, роли нет — после ре-джойна) — чиним на ``on_member_join``.
 
+Владелец сервера через UI: выдача роли «Молчун» → мут на 7d («Приказ 66»);
+снятие роли → анмут. Модераторская выдача роли сюда не входит.
+
 Отложенный мут: ``/mute`` по цели, которой уже нет на сервере (Discord timeout
 не выдать не-участнику), кладётся в ``pending_mutes`` и применяется при
 возвращении (``on_member_join`` + разовая сверка на старте). Не вернулся за
@@ -40,6 +43,7 @@ from connor.core.resolve import EntityResolver
 from connor.core.targets import parse_target_id
 from connor.core.texts import ERR_NO_TARGET, ERR_TARGET_ABSENT, REASON_NOT_GIVEN, SELF_MODERATION
 from connor.core.timefmt import fmt_full, format_remaining_coarse, parse_mute_duration
+from connor.db.repo_molchun_role_watcher import RepoMolchunRoleWatcher
 from connor.db.repo_mute_stats import RepoMuteStats
 from connor.db.repo_mute_watcher import RepoMuteWatcher
 from connor.db.repo_pending_mute import RepoPendingMute
@@ -65,6 +69,9 @@ _PENDING_SWEEP_INTERVAL_HOURS = 1
 # см. anti.py: журнал аудита появляется в API не сразу (~4-5 c) — это и есть
 # реальный потолок задержки, не интервал опроса; опрашивать чаще бессмысленно
 _MANUAL_POLL_INTERVAL_SECONDS = 3
+
+_ORDER66_REASON = "Приказ 66"
+_ORDER66_DURATION = "7d"
 
 _APPEAL = (
     "Для обжалования вы можете обратиться к старшим модераторам или супермодераторам, "
@@ -159,6 +166,7 @@ class Mute(commands.Cog):
         self.state = MuteState()
         self.pending_repo = RepoPendingMute(bot.db)
         self.watcher_repo = RepoMuteWatcher(bot.db)
+        self.role_watcher_repo = RepoMolchunRoleWatcher(bot.db)
         self.stats_repo = RepoMuteStats(bot.db)
         self._resolver = EntityResolver(log)  # реконсиляция дёргается часто — лог 1 раз на id
         self._pending_startup_done = False
@@ -166,10 +174,12 @@ class Mute(commands.Cog):
     async def cog_load(self) -> None:
         self._sweep_pending.start()
         self._poll_manual_changes.start()
+        self._poll_molchun_role.start()
 
     async def cog_unload(self) -> None:
         self._sweep_pending.cancel()
         self._poll_manual_changes.cancel()
+        self._poll_molchun_role.cancel()
 
     # -- helpers --------------------------------------------------------------
 
@@ -195,6 +205,9 @@ class Mute(commands.Cog):
 
     def _audit(self, ctx: commands.Context, what: str) -> str:
         return f"{ctx.author} ({ctx.author.id}): {what}"
+
+    def _audit_user(self, actor: discord.abc.User, what: str) -> str:
+        return f"{actor} ({actor.id}): {what}"
 
     async def _send_dm(self, member: discord.Member, embed: discord.Embed) -> None:
         try:
@@ -608,6 +621,173 @@ class Mute(commands.Cog):
                 mod_name=embed_author_name(actor),
                 mod_icon=embed_author_icon(actor),
                 mention=f"<@{target.id}>",
+            )
+        )
+
+    # -- наблюдение за ручной выдачей/снятием роли «Молчун» владельцем (audit log) --
+    #
+    # Выдача роли через UI владельцем = мут 7d с причиной «Приказ 66».
+    # Снятие роли владельцем = анмут. Модераторы и сам бот игнорируются.
+    # Отдельный курсор: тип записей member_role_update, не member_update.
+
+    @tasks.loop(seconds=_MANUAL_POLL_INTERVAL_SECONDS)
+    async def _poll_molchun_role(self) -> None:
+        try:
+            guild = self.bot.get_guild(self.bot.config.guild_id)
+            if guild is None:
+                return
+            await self._poll_molchun_role_once(guild)
+        except Exception:
+            log.exception("вотчер роли «Молчун»: сбой опроса audit log — цикл продолжается")
+
+    @_poll_molchun_role.before_loop
+    async def _before_poll_molchun_role(self) -> None:
+        await self.bot.wait_until_ready()
+
+    @_poll_molchun_role.error
+    async def _on_poll_molchun_role_error(self, exc: BaseException) -> None:
+        log.exception("вотчер роли «Молчун»: ошибка вне тела итерации", exc_info=exc)
+
+    async def _poll_molchun_role_once(self, guild: discord.Guild) -> None:
+        cursor = await self.role_watcher_repo.get_cursor()
+
+        if cursor is None:
+            newest_id = await self._latest_entry_id(guild)
+            if newest_id is not None:
+                await self.role_watcher_repo.set_cursor(newest_id)
+            return
+
+        async for entry in guild.audit_logs(
+            action=discord.AuditLogAction.member_role_update,
+            after=discord.Object(id=cursor),
+            oldest_first=True,
+            limit=None,
+        ):
+            try:
+                await self._handle_molchun_role_entry(guild, entry)
+            except Exception:
+                log.exception("вотчер роли «Молчун»: сбой обработки записи %d", entry.id)
+            await self.role_watcher_repo.set_cursor(entry.id)
+
+    async def _handle_molchun_role_entry(
+        self, guild: discord.Guild, entry: discord.AuditLogEntry
+    ) -> None:
+        if self.bot.user is not None and entry.user_id == self.bot.user.id:
+            return
+        if entry.user_id != guild.owner_id:
+            return
+
+        target = entry.target
+        if target is None:
+            return
+        actor = entry.user
+        if actor is None:
+            log.warning(
+                "вотчер роли «Молчун»: не нашёл автора изменения у записи %d (цель %d)",
+                entry.id,
+                target.id,
+            )
+            return
+
+        role_id = self.bot.config.roles["MOLCHUN"]
+        removed_ids = {r.id for r in getattr(entry.before, "roles", [])}
+        added_ids = {r.id for r in getattr(entry.after, "roles", [])}
+
+        if role_id in added_ids:
+            await self._on_owner_molchun_grant(guild, target=target, actor=actor)
+        if role_id in removed_ids:
+            await self._on_owner_molchun_removal(guild, target=target, actor=actor)
+
+    async def _on_owner_molchun_grant(
+        self,
+        guild: discord.Guild,
+        *,
+        target: discord.Member | discord.User | discord.Object,
+        actor: discord.User | discord.Member,
+    ) -> None:
+        member = await fetch_member(guild, target.id)
+        if member is None:
+            log.warning(
+                "вотчер роли «Молчун»: цель %d не на сервере — мут «Приказ 66» не выдан",
+                target.id,
+            )
+            return
+        if member.bot or is_self_moderation(actor.id, member.id):
+            return
+        if _has_active_timeout(member):
+            return  # роль у замьюченных уже стоит; через UI её только снимают
+
+        seconds = parse_mute_duration(_ORDER66_DURATION)
+        try:
+            await member.timeout(
+                timedelta(seconds=seconds),
+                reason=self._audit_user(actor, f"мут {_ORDER66_DURATION}"),
+            )
+        except discord.Forbidden:
+            log_action_error(log, "наложить таймаут («Приказ 66»)", invoker=actor, target=member)
+            return
+
+        await self.pending_repo.remove(member.id)
+        self.state.begin(member.id, actor.id, monotonic(), _ORDER66_DURATION)
+
+        await self._send_dm(
+            member,
+            build_mute_dm_embed(
+                server_name=guild.name,
+                time_str=_ORDER66_DURATION,
+                reason=_ORDER66_REASON,
+                rules_url=self.bot.config.mute.rules_url,
+                updated=False,
+            ),
+        )
+        channel = self._bot_komandy()
+        sent = None
+        if channel is not None:
+            try:
+                sent = await channel.send(
+                    embed=build_mute_channel_embed(
+                        mod_name=embed_author_name(actor),
+                        mod_icon=embed_author_icon(actor),
+                        mention=member.mention,
+                        time_str=_ORDER66_DURATION,
+                        reason=_ORDER66_REASON,
+                        updated=False,
+                    )
+                )
+            except discord.HTTPException:
+                log_action_error(log, "лог «Приказ 66» в #бот-команды", target=member)
+        await self._record_mute_stat(member.id, actor.id, sent)
+
+    async def _on_owner_molchun_removal(
+        self,
+        guild: discord.Guild,
+        *,
+        target: discord.Member | discord.User | discord.Object,
+        actor: discord.User | discord.Member,
+    ) -> None:
+        member = await fetch_member(guild, target.id)
+        if member is None:
+            await self.pending_repo.remove(target.id)
+            return
+        if not _has_active_timeout(member):
+            return
+
+        try:
+            await member.timeout(None, reason=self._audit_user(actor, "снятие мута"))
+        except discord.Forbidden:
+            log_action_error(log, "снять таймаут («Приказ 66»)", invoker=actor, target=member)
+            return
+
+        self.state.end(member.id)
+        await self._send_plain_dm(member, f'Ограничения на сервере "{guild.name}" сняты')
+        channel = self._bot_komandy()
+        if channel is None:
+            return
+        await channel.send(
+            embed=build_unmute_channel_embed(
+                mod_name=embed_author_name(actor),
+                mod_icon=embed_author_icon(actor),
+                mention=member.mention,
             )
         )
 
