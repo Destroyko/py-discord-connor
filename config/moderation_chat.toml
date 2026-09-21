@@ -84,6 +84,8 @@ gif_domains = [
     "tenor.com",
     "media.tenor.com",
     "klipy.com",
+    "media.giphy.com",
+    "giphy.com",
     "static.klipy.com",
     "klipy.co",
     "static.klipy.co",
