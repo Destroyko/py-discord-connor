@@ -97,7 +97,6 @@ _CHANNEL_PERMS: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
     ("AUDIT", "#аудит", _VSE),
     ("VYDACHA", "#выдача-работяг", (*_VS, ("bypass_slowmode", "Bypass Slowmode"))),
     ("BANY", "#баны", _VSE),
-    ("TRIGGER_VOICE", "канал-триггер войса", (("view_channel", "View"),)),
     ("CHEKLIST", "#чек-лист", _VSE),
     ("CHEKLIST2", "#чек-лист2", _VSE),
     ("FLUDISLAVL", "#флудиславль", _VSE),
@@ -343,6 +342,20 @@ class ConnorBot(commands.Bot):
                     guild, self.config.categories[key], label, needed, live=live
                 )
             )
+
+        # канал-триггер: боту нужен только сам факт входа в него (событие + сравнение
+        # по ID) и Move Members (в guild-level выше) — ни View, ни запросов к каналу
+        # по API код не делает, поэтому права/live-fetch здесь не проверяем, только
+        # что канал есть в кэше гильдии
+        trigger_id = self.config.channels["TRIGGER_VOICE"]
+        results.append(
+            preflight.CheckResult(
+                "войс",
+                "канал-триггер",
+                ok=guild.get_channel(trigger_id) is not None,
+                detail="" if guild.get_channel(trigger_id) else f"не найден по ID ({trigger_id})",
+            )
+        )
 
         afk = guild.afk_channel
         results.append(
