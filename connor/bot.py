@@ -97,6 +97,7 @@ _CHANNEL_PERMS: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
     ("AUDIT", "#аудит", _VSE),
     ("VYDACHA", "#выдача-работяг", (*_VS, ("bypass_slowmode", "Bypass Slowmode"))),
     ("BANY", "#баны", _VSE),
+    ("TRIGGER_VOICE", "канал-триггер войса", (("view_channel", "View"),)),
     ("CHEKLIST", "#чек-лист", _VSE),
     ("CHEKLIST2", "#чек-лист2", _VSE),
     ("FLUDISLAVL", "#флудиславль", _VSE),
@@ -278,8 +279,14 @@ class ConnorBot(commands.Bot):
             self._exit_code = 1
             await self.close()
 
-    async def run_preflight(self) -> list[preflight.CheckResult]:
-        """Единый прогон стартовой диагностики (``on_ready`` и ``/healthcheck``)."""
+    async def run_preflight(self, *, live: bool = False) -> list[preflight.CheckResult]:
+        """Единый прогон диагностики (``on_ready`` и ``/healthcheck``).
+
+        ``live=True`` (только ``/healthcheck``): права каналов считаются не по кэшу
+        discord.py, а по свежим данным REST (``fetch_channel``), плюс проба чтения
+        журнала аудита. Ловит расхождение кэша с реальностью (баг/задержка Discord).
+        Старт идёт без ``live`` — не гоняем десяток лишних запросов при каждом запуске.
+        """
         results: list[preflight.CheckResult] = []
         gid = self.config.guild_id
         guild = self.get_guild(gid)
@@ -321,10 +328,21 @@ class ConnorBot(commands.Bot):
             )
         )
 
+        if live:
+            results.append(await self._check_audit_log_readable(guild))
+
         for key, label, needed in _CHANNEL_PERMS:
-            results.append(self._check_channel(guild, self.config.channels[key], label, needed))
+            results.append(
+                await self._check_channel(
+                    guild, self.config.channels[key], label, needed, live=live
+                )
+            )
         for key, label, needed in _CATEGORY_PERMS:
-            results.append(self._check_channel(guild, self.config.categories[key], label, needed))
+            results.append(
+                await self._check_channel(
+                    guild, self.config.categories[key], label, needed, live=live
+                )
+            )
 
         afk = guild.afk_channel
         results.append(
@@ -346,14 +364,47 @@ class ConnorBot(commands.Bot):
             return preflight.check_db(ping_ok=False, error=str(exc))
         return preflight.check_db(ping_ok=True)
 
-    def _check_channel(
+    async def _check_audit_log_readable(self, guild: discord.Guild) -> preflight.CheckResult:
+        try:
+            async for _ in guild.audit_logs(limit=1):
+                break
+        except discord.HTTPException as exc:
+            return preflight.check_audit_log_readable(
+                readable=False, error=f"Discord API {exc.status}: {exc.text or exc}"
+            )
+        return preflight.check_audit_log_readable(readable=True)
+
+    async def _check_channel(
         self,
         guild: discord.Guild,
         channel_id: int,
         label: str,
         needed: tuple[tuple[str, str], ...],
+        *,
+        live: bool = False,
     ) -> preflight.CheckResult:
         channel = guild.get_channel(channel_id)
+        if live:
+            # свежий снимок канала с актуальными overwrite'ами; 403/404 = бот канал
+            # реально не видит, даже если кэш ещё считает иначе
+            try:
+                channel = await guild.fetch_channel(channel_id)
+            except discord.NotFound:
+                return preflight.check_channel_unreachable(
+                    channel_id=channel_id,
+                    label=label,
+                    reason="канал не найден (удалён или неверный ID)",
+                )
+            except discord.Forbidden:
+                return preflight.check_channel_unreachable(
+                    channel_id=channel_id,
+                    label=label,
+                    reason="бот не видит канал (Discord API 403: нет доступа)",
+                )
+            except discord.HTTPException as exc:
+                return preflight.check_channel_unreachable(
+                    channel_id=channel_id, label=label, reason=f"ошибка Discord API {exc.status}"
+                )
         if channel is None:
             return preflight.check_channel(
                 channel_id=channel_id, label=label, exists=False, missing_perms=[]

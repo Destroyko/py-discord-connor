@@ -53,9 +53,7 @@ class _LevelRange(logging.Filter):
         return self._high is None or record.levelno < self._high
 
 
-def _add_file_handlers(
-    root: logging.Logger, log_dir: Path, formatter: logging.Formatter
-) -> None:
+def _add_file_handlers(root: logging.Logger, log_dir: Path, formatter: logging.Formatter) -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
     for name, low, high in _LEVEL_FILES:
         handler = logging.handlers.TimedRotatingFileHandler(

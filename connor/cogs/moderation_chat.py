@@ -28,6 +28,7 @@ from connor.core import deobfuscate
 from connor.core.automod_mirror import AutoModKeywords, BypassHit
 from connor.core.channels import in_roddom
 from connor.core.msg_guard import should_process_message
+from connor.core.poll_backoff import PollBackoff
 from connor.core.resolve import EntityResolver
 
 if TYPE_CHECKING:
@@ -124,6 +125,29 @@ class ModerationChat(commands.Cog):
         self._exempt_channels: frozenset[int] = frozenset()
         self._exempt_roles: frozenset[int] = frozenset()
         self._sync_lock = asyncio.Lock()
+        # on_message идёт по всем каналам сервера: если бот потерял доступ к чек-листу
+        # (право снято, баг Discord), каждое подозрительное сообщение дало бы заведомо
+        # обречённый запрос (403/404) — отдельный предохранитель на каждый канал
+        self._breaker_words = PollBackoff("пересылка в #чек-лист", log)
+        self._breaker_media = PollBackoff("пересылка в #чек-лист2", log)
+
+    async def _guarded_send(
+        self,
+        breaker: PollBackoff,
+        channel: discord.abc.Messageable,
+        *args: object,
+        **kwargs: object,
+    ) -> bool:
+        """``send`` через откат: во время паузы после сбоя запрос не делается вовсе."""
+        if breaker.should_skip():
+            return False
+        try:
+            await channel.send(*args, **kwargs)  # type: ignore[arg-type]
+        except discord.HTTPException as exc:
+            breaker.failure(exc)
+            return False
+        breaker.success()
+        return True
 
     @property
     def _mc(self) -> ModerationChatConfig:
@@ -256,7 +280,9 @@ class ModerationChat(commands.Cog):
         channel = self._channel(self.bot.config.channels["CHEKLIST"], "#чек-лист")
         if channel is None:
             return
-        await channel.send(
+        await self._guarded_send(
+            self._breaker_words,
+            channel,
             embed=build_word_embed(
                 source_title=_source_title(message.channel),
                 author_mention=message.author.mention,
@@ -264,7 +290,7 @@ class ModerationChat(commands.Cog):
                 jump_url=message.jump_url,
                 colour=colour,
                 matched=matched,
-            )
+            ),
         )
 
     async def _check_media(self, message: discord.Message) -> None:
@@ -283,9 +309,7 @@ class ModerationChat(commands.Cog):
         # внешний эмодзи) — снимаем обёртку целиком, иначе останется «[текст]()».
         comment = message.content or ""
         for link in gif_links:
-            comment = re.sub(
-                r"\[[^\]]*\]\(\s*" + re.escape(link) + r"[^)]*\)", "", comment
-            )
+            comment = re.sub(r"\[[^\]]*\]\(\s*" + re.escape(link) + r"[^)]*\)", "", comment)
             comment = comment.replace(link, "")
         comment = comment.strip()
 
@@ -293,15 +317,18 @@ class ModerationChat(commands.Cog):
         if comment:
             parts.append(comment)
         parts.extend(attachment_refs + gif_links)
-        await channel.send("\n".join(parts))
+        if not await self._guarded_send(self._breaker_media, channel, "\n".join(parts)):
+            return
 
         # 2. отдельным сообщением — метаданные
-        await channel.send(
+        await self._guarded_send(
+            self._breaker_media,
+            channel,
             embed=build_media_meta_embed(
                 source_title=_source_title(message.channel),
                 author_mention=message.author.mention,
                 jump_url=message.jump_url,
-            )
+            ),
         )
 
 

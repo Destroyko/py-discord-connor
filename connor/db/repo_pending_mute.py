@@ -54,9 +54,7 @@ class RepoPendingMute:
 
     async def remove(self, user_id: int) -> bool:
         """``True`` — запись была и удалена."""
-        cur = await self._db.conn.execute(
-            "DELETE FROM pending_mutes WHERE user_id = ?", (user_id,)
-        )
+        cur = await self._db.conn.execute("DELETE FROM pending_mutes WHERE user_id = ?", (user_id,))
         await self._db.conn.commit()
         return cur.rowcount > 0
 

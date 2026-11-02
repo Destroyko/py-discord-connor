@@ -135,6 +135,23 @@ def check_channel(
     return CheckResult(section, label, ok=True)
 
 
+def check_channel_unreachable(*, channel_id: int, label: str, reason: str) -> CheckResult:
+    """Живая проверка (``/healthcheck``): Discord API не отдаёт бота канал целиком."""
+    return CheckResult("каналы", label, ok=False, detail=f"{reason} (ID {channel_id})")
+
+
+def check_audit_log_readable(*, readable: bool, error: str = "") -> CheckResult:
+    """Живая проверка: журнал аудита реально читается (``View Audit Log``)."""
+    if readable:
+        return CheckResult("права", "журнал аудита (live)", ok=True)
+    return CheckResult(
+        "права",
+        "журнал аудита (live)",
+        ok=False,
+        detail=f"{error or 'нет доступа'} — вотчеры ручных действий не работают",
+    )
+
+
 def check_command_permissions_api(*, reachable: bool, error: str = "") -> CheckResult:
     if reachable:
         return CheckResult("Command Permissions API", "доступ", ok=True)

@@ -39,6 +39,7 @@ from connor.core.hierarchy import (
 from connor.core.members import fetch_member
 from connor.core.msg_guard import should_process_message
 from connor.core.mute_state import MuteState
+from connor.core.poll_backoff import PollBackoff
 from connor.core.resolve import EntityResolver
 from connor.core.targets import parse_target_id
 from connor.core.texts import ERR_NO_TARGET, ERR_TARGET_ABSENT, REASON_NOT_GIVEN, SELF_MODERATION
@@ -170,6 +171,8 @@ class Mute(commands.Cog):
         self.stats_repo = RepoMuteStats(bot.db)
         self._resolver = EntityResolver(log)  # реконсиляция дёргается часто — лог 1 раз на id
         self._pending_startup_done = False
+        self._manual_backoff = PollBackoff("вотчер мута", log)
+        self._molchun_backoff = PollBackoff("вотчер роли «Молчун»", log)
 
     async def cog_load(self) -> None:
         self._sweep_pending.start()
@@ -509,13 +512,16 @@ class Mute(commands.Cog):
 
     @tasks.loop(seconds=_MANUAL_POLL_INTERVAL_SECONDS)
     async def _poll_manual_changes(self) -> None:
+        if self._manual_backoff.should_skip():
+            return
         try:
             guild = self.bot.get_guild(self.bot.config.guild_id)
             if guild is None:
                 return
             await self._poll_manual_once(guild)
-        except Exception:
-            log.exception("вотчер мута: сбой опроса audit log — цикл продолжается")
+            self._manual_backoff.success()
+        except Exception as exc:
+            self._manual_backoff.failure(exc)
 
     @_poll_manual_changes.before_loop
     async def _before_poll_manual(self) -> None:
@@ -632,13 +638,16 @@ class Mute(commands.Cog):
 
     @tasks.loop(seconds=_MANUAL_POLL_INTERVAL_SECONDS)
     async def _poll_molchun_role(self) -> None:
+        if self._molchun_backoff.should_skip():
+            return
         try:
             guild = self.bot.get_guild(self.bot.config.guild_id)
             if guild is None:
                 return
             await self._poll_molchun_role_once(guild)
-        except Exception:
-            log.exception("вотчер роли «Молчун»: сбой опроса audit log — цикл продолжается")
+            self._molchun_backoff.success()
+        except Exception as exc:
+            self._molchun_backoff.failure(exc)
 
     @_poll_molchun_role.before_loop
     async def _before_poll_molchun_role(self) -> None:

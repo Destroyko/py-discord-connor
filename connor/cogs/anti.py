@@ -37,6 +37,7 @@ from connor.core.hierarchy import (
     is_self_moderation,
 )
 from connor.core.members import fetch_member
+from connor.core.poll_backoff import PollBackoff
 from connor.core.resolve import EntityResolver
 from connor.core.targets import parse_target_id
 from connor.core.texts import ERR_NO_TARGET, REASON_NOT_GIVEN, SELF_MODERATION
@@ -142,6 +143,7 @@ class Anti(commands.Cog):
         self.pred_repo = RepoPredlozhka(bot.db)
         self.watcher_repo = RepoAntiWatcher(bot.db)
         self._resolver = EntityResolver(log)
+        self._poll_backoff = PollBackoff("вотчер роли «работяга»", log)
 
     async def cog_load(self) -> None:
         self._poll_role_changes.start()
@@ -315,13 +317,16 @@ class Anti(commands.Cog):
 
     @tasks.loop(seconds=_POLL_INTERVAL_SECONDS)
     async def _poll_role_changes(self) -> None:
+        if self._poll_backoff.should_skip():
+            return
         try:
             guild = self.bot.get_guild(self.bot.config.guild_id)
             if guild is None:
                 return
             await self._poll_once(guild)
-        except Exception:
-            log.exception("вотчер роли «работяга»: сбой опроса audit log — цикл продолжается")
+            self._poll_backoff.success()
+        except Exception as exc:
+            self._poll_backoff.failure(exc)
 
     @_poll_role_changes.before_loop
     async def _before_poll(self) -> None:

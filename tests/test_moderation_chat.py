@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -17,6 +18,7 @@ from connor.cogs.moderation_chat import (
     find_suspicious,
 )
 from connor.core.automod_mirror import AutoModKeywords
+from connor.core.poll_backoff import PollBackoff
 
 _WORDS = ("казино", "промокод", "http://scam")
 _GIFS = ("tenor.com", "media.tenor.com")
@@ -197,9 +199,7 @@ async def test_check_media_strips_markdown_link_wrapper() -> None:
     channel = SimpleNamespace(send=AsyncMock())
     cog = _cog(channel=channel)
 
-    await cog._check_media(
-        _message(content="[смотри](https://tenor.com/view/cat-12345) ору")
-    )
+    await cog._check_media(_message(content="[смотри](https://tenor.com/view/cat-12345) ору"))
 
     content_msg = channel.send.await_args_list[0].args[0]
     assert content_msg == "ору\nhttps://tenor.com/view/cat-12345"
@@ -400,3 +400,33 @@ async def test_sync_automod_filters_rules_and_applies_ignore() -> None:
     assert cog._exempt_roles == frozenset({7})
     assert cog._detect_bypass(_text_message("сп@м"), "сп@м") is not None
     assert cog._detect_bypass(_text_message("флаг 🇷🇺"), "флаг 🇷🇺") is None
+
+
+# --- предохранитель: потеря доступа к чек-листу не должна давать лавину запросов ----
+
+
+async def test_check_media_lost_access_stops_hammering_api() -> None:
+    forbidden = discord.Forbidden(SimpleNamespace(status=403, reason="x"), "Missing Access")
+    channel = SimpleNamespace(send=AsyncMock(side_effect=forbidden))
+    cog = _cog(channel=channel)
+
+    for _ in range(30):  # 30 сообщений с гифками подряд
+        await cog._check_media(_message(content="https://tenor.com/view/cat-12345"))
+
+    assert channel.send.await_count == 1  # после первого 403 — пауза, запросов больше нет
+
+
+async def test_check_media_resumes_after_pause() -> None:
+    forbidden = discord.Forbidden(SimpleNamespace(status=403, reason="x"), "Missing Access")
+    channel = SimpleNamespace(send=AsyncMock(side_effect=[forbidden, None, None]))
+    cog = _cog(channel=channel)
+    clock = [1000.0]
+    cog._breaker_media = PollBackoff("x", logging.getLogger("t"), clock=lambda: clock[0])
+
+    await cog._check_media(_message(content="https://tenor.com/view/cat-12345"))
+    await cog._check_media(_message(content="https://tenor.com/view/cat-12345"))
+    assert channel.send.await_count == 1
+
+    clock[0] += 10_000  # пауза истекла
+    await cog._check_media(_message(content="https://tenor.com/view/cat-12345"))
+    assert channel.send.await_count == 3  # контент + метаданные
