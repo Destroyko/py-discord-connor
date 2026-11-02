@@ -78,6 +78,24 @@ def _split_keywords(
     return frozenset(plain), tuple(dict.fromkeys(wild))
 
 
+#: слово, которое от схлопывания повторов укоротилось до этой длины (и короче), в
+#: ``loose`` не участвует: ``*нигг*`` → ``*ниг*`` ловило бы «книга», «нигде»
+_MIN_COLLAPSED_LEN = 4
+
+
+def _collapses_to_stub(keyword: str, collapse_min: int) -> bool:
+    """Схлопывание повторов укорачивает слово до слишком короткого огрызка.
+
+    Сообщение схлопывается так же, как и банворд, поэтому «нигг» превращается в
+    «ниг» и совпадает с любым словом, где есть «ниг». Такие слова из ``loose``
+    исключаются (прямое совпадение ``strict`` и остальные банворды работают).
+    """
+    core = keyword.replace("*", "")
+    unfolded = deobfuscate.normalize(core, collapse_min=len(core) + 2)
+    folded = deobfuscate.normalize(core, collapse_min=collapse_min)
+    return len(folded) < len(unfolded) and len(folded) < _MIN_COLLAPSED_LEN
+
+
 def _country_flag(code: str) -> str:
     """ISO-код страны из 2 латинских букв → эмодзи-флаг (пара regional indicator)."""
     return "".join(chr(0x1F1E6 + ord(c) - ord("a")) for c in code)
@@ -209,8 +227,9 @@ class AutoModKeywords:
         regexes = _compile_regexes(regex_patterns)
 
         strict_plain, strict_wild = _split_keywords(words, deobfuscate.baseline)
+        loose_words = [w for w in words if not _collapses_to_stub(w, collapse_min)]
         loose_plain, loose_wild = _split_keywords(
-            words, lambda s: deobfuscate.normalize(s, collapse_min=collapse_min)
+            loose_words, lambda s: deobfuscate.normalize(s, collapse_min=collapse_min)
         )
         allow = tuple(
             a

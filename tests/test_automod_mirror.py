@@ -208,3 +208,38 @@ def test_keyword_and_regex_counts() -> None:
     mk = _kw(["спам", "казино*", "лох"], regex=[r"\d{4}"])
     assert mk.keyword_count == 3
     assert mk.regex_count == 1
+
+
+# --- схлопывание повторов (collapse_repeats_min = 2) ------------------------------
+
+
+def _kw2(words) -> AutoModKeywords:
+    return AutoModKeywords.build(list(words), [], [], collapse_min=2)
+
+
+def _bypass2(mk: AutoModKeywords, text: str):
+    base, norm = deobfuscate.variants(text, collapse_min=2)
+    return mk.find_bypass(raw=base, norm=norm)
+
+
+def test_doubled_letter_flagged_when_collapse_is_two() -> None:
+    mk = _kw2(["*казино*"])
+    assert _bypass2(mk, "казиино") is not None
+    assert _bypass(_kw(["*казино*"]), "казиино") is None  # при 3 «ии» не схлопывается
+
+
+def test_keyword_collapsing_to_stub_is_not_used_for_loose_match() -> None:
+    # «ккни» → «кни» (3 буквы): слишком короткий огрызок, ловил бы «книга»
+    mk = _kw2(["*ккни*"])
+    assert _bypass2(mk, "хорошая книга") is None
+    assert _bypass2(mk, "книнга") is None
+
+
+def test_stub_keyword_still_works_in_strict_raw_match() -> None:
+    # сам банворд прямо в тексте — не обход (его блокирует AutoMod), но и не ошибка
+    assert _bypass2(_kw2(["*ккни*"]), "это ккни тут") is None
+
+
+def test_long_keyword_with_double_letter_still_collapses() -> None:
+    mk = _kw2(["*коонтрол*"])  # → «контрол» (7 букв), не огрызок
+    assert _bypass2(mk, "кооонтрол") is not None
