@@ -48,8 +48,6 @@ _ERR_NOT_BANNED = "Не нашел пользователя {mention} в спи�
 _MANUAL_POLL_INTERVAL_SECONDS = 3
 #: тип записи → (вид курсора, текст embed'а, ключ канала в config.channels, метка канала)
 _WATCHED: tuple[tuple[discord.AuditLogAction, str, str, str, str], ...] = (
-    (discord.AuditLogAction.ban, "ban", _BAN_OK, "BANY", "#баны"),
-    (discord.AuditLogAction.unban, "unban", _UNBAN_OK, "BANY", "#баны"),
     (discord.AuditLogAction.kick, "kick", _KICK_OK, "BOT_KOMANDY", "#бот-команды"),
 )
 
@@ -235,12 +233,12 @@ class BanKick(commands.Cog):
 
         await ctx.send(embed=self._embed_for(ctx, _UNBAN_OK.format(mention=mention), reason))
 
-    # -- наблюдение за ручными банами/разбанами (опрос audit log) -------------------
+    # -- наблюдение за ручными киками (опрос audit log) ---------------------------
     #
-    # По аналогии с mute.py/anti.py: баны/разбаны через Discord UI (в обход /ban и
-    # /unban) ловятся периодическим опросом журнала аудита, а не gateway-событием.
-    # Свои действия бота (/ban, /unban, !ban, !unban) пропускаются — команда уже
-    # отчиталась сама. Курсор отдельный на каждый тип записи.
+    # По аналогии с mute.py/anti.py: кики через Discord UI (в обход /kick)
+    # ловятся периодическим опросом журнала аудита, а не gateway-событием. Свои кики
+    # бота (/kick, !kick) пропускаются — команда уже отчиталась сама. Баны/разбаны
+    # через UI бот НЕ логирует: это делает отдельный вебхук Discord.
 
     @tasks.loop(seconds=_MANUAL_POLL_INTERVAL_SECONDS)
     async def _poll_manual_changes(self) -> None:
@@ -308,7 +306,7 @@ class BanKick(commands.Cog):
         self, entry: discord.AuditLogEntry, text: str, channel_key: str, channel_label: str
     ) -> None:
         if self.bot.user is not None and entry.user_id == self.bot.user.id:
-            return  # бан/разбан/кик сделал сам бот — команда уже отчиталась
+            return  # кик сделал сам бот (/kick, !kick) — команда уже отчиталась
 
         target = entry.target
         if target is None:
@@ -334,7 +332,7 @@ class BanKick(commands.Cog):
         try:
             await channel.send(embed=embed)  # type: ignore[attr-defined]
         except discord.HTTPException:
-            log_action_error(log, f"лог ручного бана/разбана/кика в {channel_label}", target=target)
+            log_action_error(log, f"лог ручного кика в {channel_label}", target=target)
 
 
 async def setup(bot: commands.Bot) -> None:

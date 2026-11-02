@@ -54,7 +54,7 @@ def test_shipped_configs_load_with_valid_env(monkeypatch: pytest.MonkeyPatch) ->
     assert isinstance(config.moderation_chat.gif_domains, tuple)
     assert config.moderation_chat.automod_bypass_enabled is True
     assert config.moderation_chat.automod_bypass_ignore == ("ru", "ua")
-    assert config.moderation_chat.collapse_repeats_min == 3
+    assert config.moderation_chat.collapse_repeats_min == 2
     assert config.voices.room_nsfw is False
 
 

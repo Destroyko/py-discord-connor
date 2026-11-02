@@ -59,6 +59,7 @@ cover/
 *.log
 *.log.*
 /logs/
+/import_anti_out/
 local_settings.py
 db.sqlite3
 db.sqlite3-journal

@@ -36,6 +36,12 @@ def _force_utf8_streams() -> None:
 def main() -> int:
     _force_utf8_streams()
 
+    # одноразовая миграция анти-списка (удалить вместе с connor/tools после использования)
+    if len(sys.argv) > 1 and sys.argv[1] == "import-anti":
+        from connor.tools.import_anti import main as import_anti_main
+
+        return import_anti_main(sys.argv[2:])
+
     # .env в окружение до setup_logging, чтобы LOG_DIR можно было задать и там
     # (не только реальной переменной окружения). Полная валидация конфига — ниже,
     # в load_config; здесь только подтягиваем значения. Повторный load_dotenv в

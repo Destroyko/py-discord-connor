@@ -134,7 +134,7 @@ async def test_ban_success_default_reason() -> None:
     assert ctx.send.await_args.kwargs["embed"].fields[0].value == REASON_NOT_GIVEN
 
 
-# --- вотчер ручных банов/разбанов (опрос audit log) -------------------------------
+# --- вотчер ручных киков (опрос audit log) ----------------------------------------
 
 _BOT_ID = 999
 
@@ -163,37 +163,34 @@ def _entry(
     )
 
 
-def _watch_guild(
-    *,
-    bans: list[object] = (),
-    unbans: list[object] = (),
-    kicks: list[object] = (),
-    latest: list[object] = (),
-) -> SimpleNamespace:
+def _watch_guild(*, kicks: list[object] = (), latest: list[object] = ()) -> SimpleNamespace:
     def audit_logs(**kw):
         action = kw.get("action")
         if action is None:
             return _audit_iter(list(latest))
-        if action is discord.AuditLogAction.ban:
-            return _audit_iter(list(bans))
-        if action is discord.AuditLogAction.kick:
-            return _audit_iter(list(kicks))
-        return _audit_iter(list(unbans))
+        assert action is discord.AuditLogAction.kick  # баны/разбаны вотчер не запрашивает
+        return _audit_iter(list(kicks))
 
     return SimpleNamespace(audit_logs=audit_logs)
 
 
-def _watch_cog(db, channel: object | None = None, bot_komandy: object | None = None) -> BanKick:
+def _watch_cog(db, bot_komandy: object | None = None) -> BanKick:
     bot = SimpleNamespace(
         db=db,
         user=SimpleNamespace(id=_BOT_ID),
-        config=SimpleNamespace(guild_id=1, channels={"BANY": 444, "BOT_KOMANDY": 555}),
-        get_channel=lambda cid: {444: channel, 555: bot_komandy}.get(cid),
+        config=SimpleNamespace(guild_id=1, channels={"BOT_KOMANDY": 555}),
+        get_channel=lambda cid: bot_komandy if cid == 555 else None,
     )
     return BanKick(bot)  # type: ignore[arg-type]
 
 
-async def test_ban_poll_first_run_seeds_both_cursors(db) -> None:
+async def _seeded(db) -> RepoBanWatcher:
+    repo = RepoBanWatcher(db)
+    await repo.set_cursor("kick", 1)
+    return repo
+
+
+async def test_kick_poll_first_run_seeds_cursor_without_posting(db) -> None:
     channel = SimpleNamespace(send=AsyncMock())
     cog = _watch_cog(db, channel)
     g = _watch_guild(latest=[_entry(entry_id=42, target_id=5, actor_id=7)])
@@ -201,149 +198,24 @@ async def test_ban_poll_first_run_seeds_both_cursors(db) -> None:
     await cog._poll_manual_once(g)  # type: ignore[arg-type]
 
     channel.send.assert_not_awaited()
-    repo = RepoBanWatcher(db)
-    assert await repo.get_cursor("ban") == 42
-    assert await repo.get_cursor("unban") == 42
-    assert await repo.get_cursor("kick") == 42
+    assert await RepoBanWatcher(db).get_cursor("kick") == 42
 
 
-async def test_ban_poll_first_run_no_history_leaves_cursor_unset(db) -> None:
+async def test_kick_poll_first_run_no_history_leaves_cursor_unset(db) -> None:
     cog = _watch_cog(db)
     await cog._poll_manual_once(_watch_guild())  # type: ignore[arg-type]
-    assert await RepoBanWatcher(db).get_cursor("ban") is None
-
-
-async def test_manual_ban_via_ui_posts_embed(db) -> None:
-    repo = RepoBanWatcher(db)
-    await repo.set_cursor("ban", 1)
-    await repo.set_cursor("unban", 1)
-    await repo.set_cursor("kick", 1)
-    channel = SimpleNamespace(send=AsyncMock())
-    cog = _watch_cog(db, channel)
-    g = _watch_guild(bans=[_entry(entry_id=2, target_id=5, actor_id=7, reason="п11")])
-
-    await cog._poll_manual_once(g)  # type: ignore[arg-type]
-
-    channel.send.assert_awaited_once()
-    embed = channel.send.await_args.kwargs["embed"]
-    assert embed.description == "<@5> забанен. Помянем."
-    assert embed.fields[0].value == "п11"
-    assert embed.author.name == "mod7"
-    assert embed.colour == discord.Color.green()
-    assert await repo.get_cursor("ban") == 2
-    assert await repo.get_cursor("unban") == 1  # курсоры независимы
-
-
-async def test_manual_ban_via_ui_default_reason(db) -> None:
-    repo = RepoBanWatcher(db)
-    await repo.set_cursor("ban", 1)
-    await repo.set_cursor("unban", 1)
-    await repo.set_cursor("kick", 1)
-    channel = SimpleNamespace(send=AsyncMock())
-    cog = _watch_cog(db, channel)
-
-    await cog._poll_manual_once(  # type: ignore[arg-type]
-        _watch_guild(bans=[_entry(entry_id=2, target_id=5, actor_id=7)])
-    )
-
-    assert channel.send.await_args.kwargs["embed"].fields[0].value == REASON_NOT_GIVEN
-
-
-async def test_manual_unban_via_ui_posts_embed(db) -> None:
-    repo = RepoBanWatcher(db)
-    await repo.set_cursor("ban", 1)
-    await repo.set_cursor("unban", 1)
-    await repo.set_cursor("kick", 1)
-    channel = SimpleNamespace(send=AsyncMock())
-    cog = _watch_cog(db, channel)
-
-    await cog._poll_manual_once(  # type: ignore[arg-type]
-        _watch_guild(unbans=[_entry(entry_id=3, target_id=5, actor_id=7, reason="смс")])
-    )
-
-    embed = channel.send.await_args.kwargs["embed"]
-    assert embed.description == "<@5> разбанен. Возрадуемся!"
-    assert embed.fields[0].value == "смс"
-    assert await repo.get_cursor("unban") == 3
-
-
-async def test_manual_ban_by_bot_is_ignored(db) -> None:
-    repo = RepoBanWatcher(db)
-    await repo.set_cursor("ban", 1)
-    await repo.set_cursor("unban", 1)
-    await repo.set_cursor("kick", 1)
-    channel = SimpleNamespace(send=AsyncMock())
-    cog = _watch_cog(db, channel)
-
-    await cog._poll_manual_once(  # type: ignore[arg-type]
-        _watch_guild(bans=[_entry(entry_id=2, target_id=5, actor_id=_BOT_ID)])
-    )
-
-    channel.send.assert_not_awaited()
-    assert await repo.get_cursor("ban") == 2
-
-
-async def test_manual_ban_actor_not_found_skips(db) -> None:
-    repo = RepoBanWatcher(db)
-    await repo.set_cursor("ban", 1)
-    await repo.set_cursor("unban", 1)
-    await repo.set_cursor("kick", 1)
-    channel = SimpleNamespace(send=AsyncMock())
-    cog = _watch_cog(db, channel)
-
-    await cog._poll_manual_once(  # type: ignore[arg-type]
-        _watch_guild(bans=[_entry(entry_id=2, target_id=5, actor_id=None)])
-    )
-
-    channel.send.assert_not_awaited()
-    assert await repo.get_cursor("ban") == 2
-
-
-async def test_manual_ban_send_failure_still_advances_cursor(db) -> None:
-    repo = RepoBanWatcher(db)
-    await repo.set_cursor("ban", 1)
-    await repo.set_cursor("unban", 1)
-    await repo.set_cursor("kick", 1)
-    channel = SimpleNamespace(
-        send=AsyncMock(side_effect=discord.HTTPException(MagicMock(status=500), "boom"))
-    )
-    cog = _watch_cog(db, channel)
-
-    await cog._poll_manual_once(  # type: ignore[arg-type]
-        _watch_guild(bans=[_entry(entry_id=2, target_id=5, actor_id=7)])
-    )
-
-    assert await repo.get_cursor("ban") == 2
-
-
-async def test_manual_ban_without_channel_advances_cursor(db) -> None:
-    repo = RepoBanWatcher(db)
-    await repo.set_cursor("ban", 1)
-    await repo.set_cursor("unban", 1)
-    await repo.set_cursor("kick", 1)
-    cog = _watch_cog(db, None)  # #баны не резолвится
-
-    await cog._poll_manual_once(  # type: ignore[arg-type]
-        _watch_guild(bans=[_entry(entry_id=2, target_id=5, actor_id=7)])
-    )
-
-    assert await repo.get_cursor("ban") == 2
+    assert await RepoBanWatcher(db).get_cursor("kick") is None
 
 
 async def test_manual_kick_via_ui_posts_embed_to_bot_komandy(db) -> None:
-    repo = RepoBanWatcher(db)
-    await repo.set_cursor("ban", 1)
-    await repo.set_cursor("unban", 1)
-    await repo.set_cursor("kick", 1)
-    bany = SimpleNamespace(send=AsyncMock())
+    repo = await _seeded(db)
     bot_komandy = SimpleNamespace(send=AsyncMock())
-    cog = _watch_cog(db, bany, bot_komandy)
+    cog = _watch_cog(db, bot_komandy)
 
     await cog._poll_manual_once(  # type: ignore[arg-type]
         _watch_guild(kicks=[_entry(entry_id=4, target_id=5, actor_id=7, reason="взлом аккаунта")])
     )
 
-    bany.send.assert_not_awaited()
     embed = bot_komandy.send.await_args.kwargs["embed"]
     assert embed.description == "<@5> кикнут с сервера"
     assert embed.fields[0].value == "взлом аккаунта"
@@ -352,17 +224,64 @@ async def test_manual_kick_via_ui_posts_embed_to_bot_komandy(db) -> None:
     assert await repo.get_cursor("kick") == 4
 
 
-async def test_manual_kick_by_bot_is_ignored(db) -> None:
-    repo = RepoBanWatcher(db)
-    await repo.set_cursor("ban", 1)
-    await repo.set_cursor("unban", 1)
-    await repo.set_cursor("kick", 1)
+async def test_manual_kick_default_reason(db) -> None:
+    await _seeded(db)
     bot_komandy = SimpleNamespace(send=AsyncMock())
-    cog = _watch_cog(db, None, bot_komandy)
+    cog = _watch_cog(db, bot_komandy)
+
+    await cog._poll_manual_once(  # type: ignore[arg-type]
+        _watch_guild(kicks=[_entry(entry_id=4, target_id=5, actor_id=7)])
+    )
+
+    assert bot_komandy.send.await_args.kwargs["embed"].fields[0].value == REASON_NOT_GIVEN
+
+
+async def test_manual_kick_by_bot_is_ignored(db) -> None:
+    repo = await _seeded(db)
+    bot_komandy = SimpleNamespace(send=AsyncMock())
+    cog = _watch_cog(db, bot_komandy)
 
     await cog._poll_manual_once(  # type: ignore[arg-type]
         _watch_guild(kicks=[_entry(entry_id=4, target_id=5, actor_id=_BOT_ID)])
     )
 
     bot_komandy.send.assert_not_awaited()
+    assert await repo.get_cursor("kick") == 4
+
+
+async def test_manual_kick_actor_not_found_skips(db) -> None:
+    repo = await _seeded(db)
+    bot_komandy = SimpleNamespace(send=AsyncMock())
+    cog = _watch_cog(db, bot_komandy)
+
+    await cog._poll_manual_once(  # type: ignore[arg-type]
+        _watch_guild(kicks=[_entry(entry_id=4, target_id=5, actor_id=None)])
+    )
+
+    bot_komandy.send.assert_not_awaited()
+    assert await repo.get_cursor("kick") == 4
+
+
+async def test_manual_kick_send_failure_still_advances_cursor(db) -> None:
+    repo = await _seeded(db)
+    bot_komandy = SimpleNamespace(
+        send=AsyncMock(side_effect=discord.HTTPException(MagicMock(status=500), "boom"))
+    )
+    cog = _watch_cog(db, bot_komandy)
+
+    await cog._poll_manual_once(  # type: ignore[arg-type]
+        _watch_guild(kicks=[_entry(entry_id=4, target_id=5, actor_id=7)])
+    )
+
+    assert await repo.get_cursor("kick") == 4
+
+
+async def test_manual_kick_without_channel_advances_cursor(db) -> None:
+    repo = await _seeded(db)
+    cog = _watch_cog(db, None)  # #бот-команды не резолвится
+
+    await cog._poll_manual_once(  # type: ignore[arg-type]
+        _watch_guild(kicks=[_entry(entry_id=4, target_id=5, actor_id=7)])
+    )
+
     assert await repo.get_cursor("kick") == 4
