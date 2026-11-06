@@ -179,6 +179,28 @@ async def test_check_media_keeps_comment_text_alongside_link() -> None:
     assert content_msg == "ору с этого\nhttps://tenor.com/view/cat-12345"
 
 
+async def test_check_media_forwards_without_pinging_mentions() -> None:
+    channel = SimpleNamespace(send=AsyncMock())
+    cog = _cog(channel=channel)
+
+    await cog._check_media(_message(content="@everyone <@&5> https://tenor.com/view/cat-12345"))
+
+    assert channel.send.await_count == 2  # контент + метаданные
+    for call in channel.send.await_args_list:
+        allowed = call.kwargs["allowed_mentions"]
+        assert not (allowed.everyone or allowed.users or allowed.roles)
+
+
+async def test_text_forward_does_not_ping_mentions() -> None:
+    channel = SimpleNamespace(send=AsyncMock())
+    cog = _text_cog(channel=channel, automod=_banwords("спам"))
+
+    await cog._check_text(_text_message("@everyone сп@м"))
+
+    allowed = channel.send.await_args.kwargs["allowed_mentions"]
+    assert not (allowed.everyone or allowed.users or allowed.roles)
+
+
 async def test_check_media_external_emoji_link_not_forwarded() -> None:
     # внешний эмодзи (markdown-ссылка на .webp) — не медиа, в #чек-лист2 не уходит
     channel = SimpleNamespace(send=AsyncMock())
