@@ -5,6 +5,11 @@
 гейт — эффективное право ``Manage Messages`` у вызвавшего в этом канале.
 
 Запасной контур на случай отказа Dyno. Хранилища нет.
+
+Удаляются сообщения любых авторов, включая самого бота и другие боты. Возраст
+сообщения не ограничивает: свежие (моложе 14 дней) уходят пачками bulk-delete, более
+старые Discord bulk-ом не принимает — их бот удаляет по одному (медленно, упирается в
+rate limit, поэтому на время работы в канале горит «печатает…»).
 """
 
 from __future__ import annotations
@@ -31,6 +36,14 @@ log = logging.getLogger(__name__)
 
 _BULK_DELETE_MAX = 100
 _BULK_DELETE_AGE_DAYS = 14
+#: запас к 14-дневной границе bulk-delete: сообщение, собранное «почти двухнедельным»,
+#: к моменту удаления (скан мог идти долго) уже не должно уйти в bulk — Discord отклонит
+#: всю пачку целиком
+_BULK_DELETE_MARGIN = timedelta(minutes=10)
+#: потолок просмотренных сообщений за один вызов. Возраст больше не ограничивает скан,
+#: и без потолка редкий фильтр (``user``/``match``) обошёл бы всю историю канала —
+#: тысячи запросов к API ради нескольких совпадений
+_SCAN_MAX = 10_000
 
 _MODES = frozenset({"user", "match", "not", "links", "images", "text"})
 _SIMPLE_MODES = frozenset({"links", "images", "text"})  # <mode> <count>
@@ -191,25 +204,36 @@ class Purge(commands.Cog):
 
     async def _run_purge(self, ctx: commands.Context, spec: PurgeSpec) -> None:
         limit = min(spec.count, self.bot.config.purge.soft_limit)
-        cutoff = utcnow() - timedelta(days=_BULK_DELETE_AGE_DAYS)
 
-        collected: list[discord.Message] = []
-        async for message in ctx.channel.history(
-            limit=None, before=ctx.message, after=cutoff, oldest_first=False
-        ):
-            if message.author.bot:  # чужих ботов (в т.ч. Dyno) не трогаем
-                continue
-            if message_matches(spec, _view(message)):
-                collected.append(message)
-                if len(collected) >= limit:
-                    break
+        # долго: скан до _SCAN_MAX сообщений + поштучное удаление старых
+        async with ctx.channel.typing():
+            collected: list[discord.Message] = []
+            async for message in ctx.channel.history(
+                limit=_SCAN_MAX, before=ctx.message, oldest_first=False
+            ):
+                if message_matches(spec, _view(message)):
+                    collected.append(message)
+                    if len(collected) >= limit:
+                        break
 
-        for start in range(0, len(collected), _BULK_DELETE_MAX):
-            chunk = collected[start : start + _BULK_DELETE_MAX]
-            if len(chunk) == 1:
-                await chunk[0].delete()
-            else:
-                await ctx.channel.delete_messages(chunk)
+            # граница считается после скана — он мог занять минуты
+            bulk_cutoff = utcnow() - timedelta(days=_BULK_DELETE_AGE_DAYS) + _BULK_DELETE_MARGIN
+            fresh = [m for m in collected if m.created_at > bulk_cutoff]
+            old = [m for m in collected if m.created_at <= bulk_cutoff]
+
+            for start in range(0, len(fresh), _BULK_DELETE_MAX):
+                chunk = fresh[start : start + _BULK_DELETE_MAX]
+                if len(chunk) == 1:
+                    await chunk[0].delete()
+                else:
+                    await ctx.channel.delete_messages(chunk)
+
+            # старше 14 дней bulk-delete недоступен — по одному; rate limit гасит discord.py
+            for message in old:
+                try:
+                    await message.delete()
+                except discord.NotFound:
+                    pass  # уже удалено (вручную / другим ботом) — цель достигнута
 
     async def _log(self, ctx: commands.Context, args: list[str]) -> None:
         channel_id = self.bot.config.channels["BOT_KOMANDY"]
