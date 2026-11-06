@@ -138,11 +138,17 @@ class ModerationChat(commands.Cog):
         *args: object,
         **kwargs: object,
     ) -> bool:
-        """``send`` через откат: во время паузы после сбоя запрос не делается вовсе."""
+        """``send`` через откат: во время паузы после сбоя запрос не делается вовсе.
+
+        Пересылка никого не уведомляет: упоминания (``@everyone``, ``@here``, роли,
+        участники) остаются в тексте подсвеченными, но пинг не уходит.
+        """
         if breaker.should_skip():
             return False
         try:
-            await channel.send(*args, **kwargs)  # type: ignore[arg-type]
+            await channel.send(  # type: ignore[arg-type]
+                *args, allowed_mentions=discord.AllowedMentions.none(), **kwargs
+            )
         except discord.HTTPException as exc:
             breaker.failure(exc)
             return False

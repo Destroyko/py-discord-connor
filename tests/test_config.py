@@ -50,7 +50,7 @@ def test_shipped_configs_load_with_valid_env(monkeypatch: pytest.MonkeyPatch) ->
     assert "FLUDISLAVL" in config.channels
     assert "RODDOM" in config.categories
     assert config.voices.points_active == 10
-    assert config.purge.soft_limit == 300
+    assert config.purge.soft_limit == 1000
     assert isinstance(config.moderation_chat.gif_domains, tuple)
     assert config.moderation_chat.automod_bypass_enabled is True
     assert config.moderation_chat.automod_bypass_ignore == ("ru", "ua")
