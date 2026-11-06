@@ -391,3 +391,55 @@ async def test_purge_different_channels_do_not_wait_for_each_other() -> None:
     ctx_a.send.assert_not_awaited()
     release.set()
     await t1
+
+
+async def test_purge_queue_limit_per_channel_skips_extra() -> None:
+    release = asyncio.Event()
+    scans = 0
+
+    async def history(*_a: object, **_kw: object):
+        nonlocal scans
+        scans += 1
+        await release.wait()
+        return
+        yield  # pragma: no cover
+
+    cog, first = _cog_and_ctx(history=history)
+    ctxs = [first]
+    for _ in range(3):
+        _, extra = _cog_and_ctx(history=history)
+        extra.channel = first.channel
+        ctxs.append(extra)
+
+    tasks = []
+    for c in ctxs:
+        tasks.append(asyncio.create_task(Purge.purge.callback(cog, c, "5")))
+        await asyncio.sleep(0.01)
+
+    # 4-й вызов при 3 уже в очереди (1 идёт + 2 ждут) — пропущен: ни ответа, ни удаления
+    await tasks[3]
+    ctxs[3].send.assert_not_awaited()
+    ctxs[3].message.delete.assert_not_awaited()
+
+    release.set()
+    await asyncio.gather(*tasks)
+    for c in ctxs[:3]:
+        c.send.assert_awaited_once_with(":pudge:")
+    assert scans == 3
+    assert cog._channel_active == {}  # счётчик освобождён
+
+    # очередь опустела — новый вызов снова принимается
+    await Purge.purge.callback(cog, ctxs[3], "5")
+    ctxs[3].send.assert_awaited_once_with(":pudge:")
+
+
+async def test_purge_queue_slot_released_on_error() -> None:
+    async def boom(*_a: object, **_kw: object):
+        raise RuntimeError("api down")
+        yield  # pragma: no cover
+
+    cog, ctx = _cog_and_ctx(history=boom)
+    with pytest.raises(RuntimeError):
+        await Purge.purge.callback(cog, ctx, "5")
+
+    assert cog._channel_active == {}

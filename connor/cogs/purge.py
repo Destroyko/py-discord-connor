@@ -14,7 +14,9 @@ rate limit, поэтому на время работы в канале гори
 Вызовы в одном канале идут строго по очереди (``asyncio.Lock`` на канал, FIFO): пока
 идёт очистка, новая команда ждёт и стартует после завершения предыдущей — иначе оба
 прохода собирали бы одни и те же сообщения и мешали друг другу. Каналы между собой
-независимы.
+независимы. В очереди канала (идущая + ожидающие) помещается не больше
+``_MAX_PER_CHANNEL`` вызовов — остальные молча пропускаются, чтобы спам командой не
+копил хвост из десятков очисток.
 """
 
 from __future__ import annotations
@@ -42,6 +44,8 @@ log = logging.getLogger(__name__)
 
 _BULK_DELETE_MAX = 100
 _BULK_DELETE_AGE_DAYS = 14
+#: сколько !purge одновременно может быть в одном канале (идущий + ожидающие в очереди)
+_MAX_PER_CHANNEL = 3
 #: запас к 14-дневной границе bulk-delete: сообщение, собранное «почти двухнедельным»,
 #: к моменту удаления (скан мог идти долго) уже не должно уйти в bulk — Discord отклонит
 #: всю пачку целиком
@@ -187,6 +191,7 @@ class Purge(commands.Cog):
         # канал → замок; asyncio.Lock отдаёт ожидающим по порядку прихода. Каналов на
         # сервере немного, замки не чистим
         self._channel_locks: dict[int, asyncio.Lock] = {}
+        self._channel_active: dict[int, int] = {}  # канал → идущих + ожидающих вызовов
 
     @commands.command(name="purge")
     @commands.guild_only()
@@ -203,16 +208,35 @@ class Purge(commands.Cog):
             await ctx.send(result.text)
             return
 
-        # 4. очередь: в канале уже идёт очистка → ждём своей очереди
-        lock = self._channel_locks.setdefault(ctx.channel.id, asyncio.Lock())
-        async with lock:
-            await self._run_purge(ctx, result)
-            try:
-                await ctx.message.delete()
-            except discord.HTTPException:
-                pass
-            await ctx.send(":pudge:")
-            await self._log(ctx, list(args))
+        # 4. очередь: в канале уже идёт очистка → ждём своей очереди; переполнена → пропуск
+        channel_id = ctx.channel.id
+        active = self._channel_active.get(channel_id, 0)
+        if active >= _MAX_PER_CHANNEL:
+            log.info(
+                "!purge от %s в канале %d пропущен: в очереди уже %d вызовов",
+                ctx.author,
+                channel_id,
+                active,
+            )
+            return
+        # между проверкой и инкрементом нет await — гонки нет
+        self._channel_active[channel_id] = active + 1
+        try:
+            lock = self._channel_locks.setdefault(channel_id, asyncio.Lock())
+            async with lock:
+                await self._run_purge(ctx, result)
+                try:
+                    await ctx.message.delete()
+                except discord.HTTPException:
+                    pass
+                await ctx.send(":pudge:")
+                await self._log(ctx, list(args))
+        finally:
+            left = self._channel_active[channel_id] - 1
+            if left:
+                self._channel_active[channel_id] = left
+            else:
+                del self._channel_active[channel_id]
 
     async def _run_purge(self, ctx: commands.Context, spec: PurgeSpec) -> None:
         limit = min(spec.count, self.bot.config.purge.soft_limit)
