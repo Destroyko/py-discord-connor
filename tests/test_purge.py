@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -160,6 +161,7 @@ def _cog_and_ctx(
     cog = Purge(bot)  # type: ignore[arg-type]
 
     channel = SimpleNamespace(
+        id=1,
         category_id=1,  # не «роддом»
         permissions_for=lambda _m: SimpleNamespace(manage_messages=True),
         history=history,
@@ -312,3 +314,80 @@ async def test_purge_history_not_limited_by_age() -> None:
 
     assert "after" not in calls[0]
     assert calls[0]["limit"] is not None  # потолок скана, а не бесконечная история
+
+
+async def test_purge_fresh_already_gone_does_not_abort() -> None:
+    gone = SimpleNamespace(status=404, reason="")
+    a, b = _msg(age_days=1), _msg(age_days=2)
+    cog, ctx = _cog_and_ctx(history=_history_of([a, b]))
+    ctx.channel.delete_messages = AsyncMock(side_effect=discord.NotFound(gone, ""))
+
+    await Purge.purge.callback(cog, ctx, "10")
+
+    ctx.send.assert_awaited_once_with(":pudge:")
+
+
+async def test_purge_same_channel_runs_queued_in_order() -> None:
+    events: list[str] = []
+    release = asyncio.Event()
+    calls = 0
+
+    async def history(*_a: object, **_kw: object):
+        nonlocal calls
+        calls += 1
+        name = "first" if calls == 1 else "second"
+        events.append(f"{name}:start")
+        if name == "first":
+            await release.wait()
+        events.append(f"{name}:scan-done")
+        return
+        yield  # pragma: no cover
+
+    cog, first = _cog_and_ctx(history=history)
+    _, second = _cog_and_ctx(history=history)
+    second.channel = first.channel  # один и тот же канал
+
+    t1 = asyncio.create_task(Purge.purge.callback(cog, first, "5"))
+    await asyncio.sleep(0.01)
+    t2 = asyncio.create_task(Purge.purge.callback(cog, second, "5"))
+    await asyncio.sleep(0.05)
+
+    # первая ещё идёт — вторая в очереди и даже не начала скан
+    assert events == ["first:start"]
+    second.send.assert_not_awaited()
+
+    release.set()
+    await asyncio.gather(t1, t2)
+    assert events == ["first:start", "first:scan-done", "second:start", "second:scan-done"]
+    first.send.assert_awaited_once_with(":pudge:")
+    second.send.assert_awaited_once_with(":pudge:")
+
+
+async def test_purge_different_channels_do_not_wait_for_each_other() -> None:
+    release = asyncio.Event()
+    started: list[str] = []
+
+    async def slow(*_a: object, **_kw: object):
+        started.append("a")
+        await release.wait()
+        return
+        yield  # pragma: no cover
+
+    async def fast(*_a: object, **_kw: object):
+        started.append("b")
+        return
+        yield  # pragma: no cover
+
+    cog, ctx_a = _cog_and_ctx(history=slow)
+    _, ctx_b = _cog_and_ctx(history=fast)
+    ctx_a.channel.id, ctx_b.channel.id = 1, 2
+
+    t1 = asyncio.create_task(Purge.purge.callback(cog, ctx_a, "5"))
+    await asyncio.sleep(0.01)
+    await Purge.purge.callback(cog, ctx_b, "5")  # завершается, пока a ещё занят
+
+    assert started == ["a", "b"]
+    ctx_b.send.assert_awaited_once_with(":pudge:")
+    ctx_a.send.assert_not_awaited()
+    release.set()
+    await t1

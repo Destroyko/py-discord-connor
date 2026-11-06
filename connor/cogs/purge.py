@@ -10,10 +10,16 @@
 сообщения не ограничивает: свежие (моложе 14 дней) уходят пачками bulk-delete, более
 старые Discord bulk-ом не принимает — их бот удаляет по одному (медленно, упирается в
 rate limit, поэтому на время работы в канале горит «печатает…»).
+
+Вызовы в одном канале идут строго по очереди (``asyncio.Lock`` на канал, FIFO): пока
+идёт очистка, новая команда ждёт и стартует после завершения предыдущей — иначе оба
+прохода собирали бы одни и те же сообщения и мешали друг другу. Каналы между собой
+независимы.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass
@@ -178,6 +184,9 @@ class Purge(commands.Cog):
     def __init__(self, bot: ConnorBot) -> None:
         self.bot = bot
         self._bot_commands_missing_logged = False
+        # канал → замок; asyncio.Lock отдаёт ожидающим по порядку прихода. Каналов на
+        # сервере немного, замки не чистим
+        self._channel_locks: dict[int, asyncio.Lock] = {}
 
     @commands.command(name="purge")
     @commands.guild_only()
@@ -194,13 +203,16 @@ class Purge(commands.Cog):
             await ctx.send(result.text)
             return
 
-        await self._run_purge(ctx, result)
-        try:
-            await ctx.message.delete()
-        except discord.HTTPException:
-            pass
-        await ctx.send(":pudge:")
-        await self._log(ctx, list(args))
+        # 4. очередь: в канале уже идёт очистка → ждём своей очереди
+        lock = self._channel_locks.setdefault(ctx.channel.id, asyncio.Lock())
+        async with lock:
+            await self._run_purge(ctx, result)
+            try:
+                await ctx.message.delete()
+            except discord.HTTPException:
+                pass
+            await ctx.send(":pudge:")
+            await self._log(ctx, list(args))
 
     async def _run_purge(self, ctx: commands.Context, spec: PurgeSpec) -> None:
         limit = min(spec.count, self.bot.config.purge.soft_limit)
@@ -223,10 +235,13 @@ class Purge(commands.Cog):
 
             for start in range(0, len(fresh), _BULK_DELETE_MAX):
                 chunk = fresh[start : start + _BULK_DELETE_MAX]
-                if len(chunk) == 1:
-                    await chunk[0].delete()
-                else:
-                    await ctx.channel.delete_messages(chunk)
+                try:
+                    if len(chunk) == 1:
+                        await chunk[0].delete()
+                    else:
+                        await ctx.channel.delete_messages(chunk)
+                except discord.NotFound:
+                    pass  # кто-то (модератор, другой бот) удалил раньше — не прерываем очистку
 
             # старше 14 дней bulk-delete недоступен — по одному; rate limit гасит discord.py
             for message in old:
