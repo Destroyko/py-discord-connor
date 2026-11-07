@@ -38,6 +38,14 @@ _GAP = r"[\W_]{0,2}"
 _MIN_GAP_LEN = 3
 _SEP_RE = re.compile(r"[\W_]")
 
+#: группы гласных, которые в ``loose`` взаимозаменяемы («хохол» ↔ «хахол»). Группа —
+#: пара букв, которые в обфускации подменяют друг друга; внутри группы буква
+#: матчится любой другой буквой группы.
+_VOWEL_GROUPS: tuple[str, ...] = ("оа", "еёи")
+_VOWEL_GROUP_OF: dict[str, str] = {ch: g for g in _VOWEL_GROUPS for ch in g}
+#: короче — без взаимозаменяемости гласных: на коротких словах даёт много ложных
+_MIN_VOWEL_FOLD_LEN = 5
+
 
 @dataclass(frozen=True, slots=True)
 class BypassHit:
@@ -47,15 +55,25 @@ class BypassHit:
     form: str
 
 
-def _spaced(word: str, gap: str) -> str:
+def _char_pat(ch: str, *, fold: bool) -> str:
+    """Регэкс для одной буквы слова; при ``fold`` гласная из группы → класс группы."""
+    group = _VOWEL_GROUP_OF.get(ch) if fold else None
+    if group is None:
+        return re.escape(ch)
+    return "[" + "".join(re.escape(c) for c in group) + "]"
+
+
+def _spaced(word: str, gap: str, *, fold: bool = False) -> str:
     """Экранированное слово с допуском ``gap`` между каждой парой букв."""
-    return gap.join(re.escape(ch) for ch in word)
+    return gap.join(_char_pat(ch, fold=fold) for ch in word)
 
 
-def _wild_pattern(kw: str, gap: str) -> re.Pattern[str]:
+def _wild_pattern(kw: str, gap: str, *, fold: bool = False) -> re.Pattern[str]:
     """``кв*`` → префикс слова, ``*кв`` → суффикс, ``*кв*`` → подстрока, ``к*в`` → к…в."""
-    g = gap if len(kw.replace("*", "")) >= _MIN_GAP_LEN else ""
-    segs = [_spaced(s, g) for s in kw.split("*") if s]
+    core_len = len(kw.replace("*", ""))
+    g = gap if core_len >= _MIN_GAP_LEN else ""
+    f = fold and core_len >= _MIN_VOWEL_FOLD_LEN
+    segs = [_spaced(s, g, fold=f) for s in kw.split("*") if s]
     core = r"\w*".join(segs) if segs else r"\w+"
     left = "" if kw.startswith("*") else r"(?<!\w)"
     right = "" if kw.endswith("*") else r"(?!\w)"
@@ -136,7 +154,7 @@ class _Matcher:
     каждой парой букв слова: разделители внутри банворда.
     """
 
-    __slots__ = ("_plain_re", "_regexes", "_wild")
+    __slots__ = ("_plain_each", "_plain_re", "_regexes", "_wild")
 
     def __init__(
         self,
@@ -145,16 +163,30 @@ class _Matcher:
         regexes: tuple[re.Pattern[str], ...],
         *,
         gap: str = "",
+        fold: bool = False,
     ) -> None:
         self._plain_re: re.Pattern[str] | None = None
+        self._plain_each: tuple[tuple[str, re.Pattern[str]], ...] = ()
         if plain:
-            alts = "|".join(
-                _spaced(k, gap if len(k) >= _MIN_GAP_LEN else "")
-                for k in sorted(plain, key=len, reverse=True)
+            ordered = sorted(plain, key=len, reverse=True)
+            each = tuple(
+                (
+                    k,
+                    re.compile(
+                        _spaced(
+                            k,
+                            gap if len(k) >= _MIN_GAP_LEN else "",
+                            fold=fold and len(k) >= _MIN_VOWEL_FOLD_LEN,
+                        )
+                    ),
+                )
+                for k in ordered
             )
+            self._plain_each = each
+            alts = "|".join(p.pattern for _, p in each)
             self._plain_re = re.compile(rf"(?<!\w)(?:{alts})(?!\w)")
         self._wild: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
-            (kw, _wild_pattern(kw, gap)) for kw in wild
+            (kw, _wild_pattern(kw, gap, fold=fold)) for kw in wild
         )
         self._regexes = regexes
 
@@ -166,6 +198,10 @@ class _Matcher:
             m = self._plain_re.search(text)
             if m is not None:
                 got = m.group(0)
+                # ключ правила, а не фрагмент текста: при подмене гласных они различаются
+                for k, pat in self._plain_each:
+                    if pat.fullmatch(got) is not None:
+                        return k, got
                 return _SEP_RE.sub("", got), got  # ключ без вставленных разделителей
         for kw, pat in self._wild:
             m = pat.search(text)
@@ -238,7 +274,7 @@ class AutoModKeywords:
         )
         return cls(
             strict=_Matcher(strict_plain, strict_wild, regexes),
-            loose=_Matcher(loose_plain, loose_wild, regexes, gap=_GAP),
+            loose=_Matcher(loose_plain, loose_wild, regexes, gap=_GAP, fold=True),
             allow=allow,
             keyword_count=len(strict_plain) + len(strict_wild),
             regex_count=len(regexes),

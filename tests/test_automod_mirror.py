@@ -243,3 +243,33 @@ def test_stub_keyword_still_works_in_strict_raw_match() -> None:
 def test_long_keyword_with_double_letter_still_collapses() -> None:
     mk = _kw2(["*коонтрол*"])  # → «контрол» (7 букв), не огрызок
     assert _bypass2(mk, "кооонтрол") is not None
+
+
+# --- взаимозаменяемые гласные (о↔а, е↔ё↔и) в ``loose`` --------------------------
+
+
+def test_vowel_swap_o_to_a_flagged() -> None:
+    # «хохол» в правиле, в сообщении «хахол»: сырой матч не проходит, обфусцированный — да
+    hit = _bypass(_kw(["хохол"]), "ну ты хахол")
+    assert hit is not None
+    assert hit.keyword == "хохол"
+    assert hit.form == "подмена символов"
+
+
+def test_vowel_swap_wildcard_flagged() -> None:
+    hit = _bypass(_kw(["*хохол*"]), "тут хахлы и хахолы")
+    assert hit is not None and hit.keyword == "*хохол*"
+
+
+def test_original_spelling_is_not_bypass_for_vowel_fold() -> None:
+    assert _bypass(_kw(["хохол"]), "ну ты хохол") is None
+
+
+def test_vowel_fold_does_not_cross_groups() -> None:
+    # о и е — разные группы: «хехол» не есть обход «хохол»
+    assert _bypass(_kw(["хохол"]), "ну ты хехол") is None
+
+
+def test_vowel_fold_skipped_for_short_keyword() -> None:
+    # короче _MIN_VOWEL_FOLD_LEN — без замены гласных, иначе «дам»/«дом» на каждом шагу
+    assert _bypass(_kw(["дом"]), "мой дам тут") is None
