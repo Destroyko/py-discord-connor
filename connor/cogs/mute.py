@@ -549,7 +549,7 @@ class Mute(commands.Cog):
             limit=None,
         ):
             try:
-                await self._handle_manual_entry(entry)
+                await self._handle_manual_entry(guild, entry)
             except Exception:
                 log.exception("вотчер мута: сбой обработки записи %d", entry.id)
             await self.watcher_repo.set_cursor(entry.id)
@@ -559,7 +559,9 @@ class Mute(commands.Cog):
             return entry.id
         return None
 
-    async def _handle_manual_entry(self, entry: discord.AuditLogEntry) -> None:
+    async def _handle_manual_entry(
+        self, guild: discord.Guild, entry: discord.AuditLogEntry
+    ) -> None:
         if self.bot.user is not None and entry.user_id == self.bot.user.id:
             return  # таймаут поставил/снял сам бот (/mute, /unmute, отложенный мут) — уже отчитался
 
@@ -583,7 +585,7 @@ class Mute(commands.Cog):
                 target=target, actor=actor, until=after_until, reason=entry.reason
             )
         elif before_until is not None and after_until is None:
-            await self._on_manual_unmute(target=target, actor=actor)
+            await self._on_manual_unmute(guild, target=target, actor=actor)
 
     async def _on_manual_mute(
         self,
@@ -615,10 +617,14 @@ class Mute(commands.Cog):
 
     async def _on_manual_unmute(
         self,
+        guild: discord.Guild,
         *,
         target: discord.Member | discord.User | discord.Object,
         actor: discord.User | discord.Member,
     ) -> None:
+        member = await fetch_member(guild, target.id)
+        if member is not None:
+            await self._send_plain_dm(member, f'Ограничения на сервере "{guild.name}" сняты')
         channel = self._bot_komandy()
         if channel is None:
             return

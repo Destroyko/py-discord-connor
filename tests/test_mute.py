@@ -503,13 +503,26 @@ def _watch_entry(
     )
 
 
-def _watch_guild(*, entries: list[object], latest: list[object] = ()):
+def _watch_guild(*, entries: list[object], latest: list[object] = (), members: dict | None = None):
+    members = members or {}
+
     def audit_logs(**kw):
         if kw.get("limit") == 1 and "action" not in kw:
             return _audit_iter(list(latest))
         return _audit_iter(entries)
 
-    return SimpleNamespace(audit_logs=audit_logs)
+    async def fetch_member(i: int):
+        member = members.get(i)
+        if member is None:
+            raise discord.NotFound(SimpleNamespace(status=404, reason="x"), "no")
+        return member
+
+    return SimpleNamespace(
+        name="Коннор",
+        audit_logs=audit_logs,
+        get_member=lambda i: members.get(i),
+        fetch_member=fetch_member,
+    )
 
 
 def _watch_bot(db: object, *, bot_komandy: object | None = None) -> SimpleNamespace:
@@ -597,7 +610,8 @@ async def test_manual_unmute_via_ui_posts_embed(db) -> None:
     channel = SimpleNamespace(send=AsyncMock())
     cog = Mute(_watch_bot(db, bot_komandy=channel))  # type: ignore[arg-type]
     entry = _watch_entry(entry_id=2, target_id=5, actor_id=7, before_until=utcnow())
-    g = _watch_guild(entries=[entry])
+    member = _member(5)
+    g = _watch_guild(entries=[entry], members={5: member})
 
     await _poll_manual(cog, g)
 
@@ -606,6 +620,31 @@ async def test_manual_unmute_via_ui_posts_embed(db) -> None:
     assert embed.description == "<@5> размьючен"
     assert embed.author.name == "mod7"
     assert embed.colour == discord.Color.green()
+
+
+async def test_manual_unmute_via_ui_sends_plain_dm(db) -> None:
+    await RepoMuteWatcher(db).set_cursor(1)
+    channel = SimpleNamespace(send=AsyncMock())
+    cog = Mute(_watch_bot(db, bot_komandy=channel))  # type: ignore[arg-type]
+    entry = _watch_entry(entry_id=2, target_id=5, actor_id=7, before_until=utcnow())
+    member = _member(5)
+    g = _watch_guild(entries=[entry], members={5: member})
+
+    await _poll_manual(cog, g)
+
+    member.send.assert_awaited_once_with('Ограничения на сервере "Коннор" сняты')
+
+
+async def test_manual_unmute_via_ui_target_left_server_no_dm(db) -> None:
+    await RepoMuteWatcher(db).set_cursor(1)
+    channel = SimpleNamespace(send=AsyncMock())
+    cog = Mute(_watch_bot(db, bot_komandy=channel))  # type: ignore[arg-type]
+    entry = _watch_entry(entry_id=2, target_id=5, actor_id=7, before_until=utcnow())
+    g = _watch_guild(entries=[entry])
+
+    await _poll_manual(cog, g)
+
+    channel.send.assert_awaited_once()  # embed в лог всё равно уходит
 
 
 async def test_manual_poll_ignores_change_by_bot(db) -> None:
